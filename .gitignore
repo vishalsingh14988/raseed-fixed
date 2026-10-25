@@ -1,0 +1,26 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+backend/.env
+backend/billproof.db
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Frontend dependencies and build
+node_modules/
+dist/

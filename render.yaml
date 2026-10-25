@@ -1,0 +1,36 @@
+# Raseed — Render blueprint
+# The backend MUST run as a Docker service so that Tesseract OCR
+# (installed in backend/Dockerfile) is actually available. If the backend
+# is created as a plain Python service, Tesseract is missing and OCR
+# returns no text — that was the main cause of blank bill details.
+# The frontend also runs OCR in the browser (tesseract.js) as a fallback,
+# and the backend can fall back to RapidOCR, but Docker is the clean setup.
+services:
+  - type: web
+    name: billproof-starter
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: FRONTEND_ORIGIN
+        value: https://billproof-starter-1.onrender.com
+
+  - type: web
+    name: billproof-starter-1
+    env: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://billproof-starter.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
