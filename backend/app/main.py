@@ -178,6 +178,10 @@ def init_db():
 
                 category TEXT DEFAULT 'Other',
 
+                invoice_no TEXT DEFAULT '',
+
+                order_no TEXT DEFAULT '',
+
                 cloudinary_url TEXT DEFAULT '',
 
                 public_id TEXT DEFAULT '',
@@ -225,6 +229,26 @@ def init_db():
                 ALTER TABLE bills
 
                 ADD COLUMN source_key TEXT DEFAULT ''
+
+            """)
+
+        if "invoice_no" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN invoice_no TEXT DEFAULT ''
+
+            """)
+
+        if "order_no" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN order_no TEXT DEFAULT ''
 
             """)
 
@@ -583,6 +607,35 @@ def _filename_product(filename: str) -> str:
     return cleaned.title() if 3 < len(cleaned) < 90 else ""
 
 
+def parse_reference_numbers(text: str):
+    """Extract invoice number and order number, as printed on the bill.
+
+    Service centres ask for these first, so they are worth capturing.
+    Only values sitting right next to their label are accepted.
+    """
+    def _find(patterns):
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip(" .,-")
+                # Reject obvious non-numbers (e.g. a date used as the value).
+                if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", value):
+                    continue
+                if len(value) >= 4:
+                    return value
+        return ""
+
+    invoice_no = _find((
+        r"tax\s*invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,})",
+        r"invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,})",
+        r"\binv\.?\s*(?:no\.?|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,})",
+    ))
+    order_no = _find((
+        r"order\s*(?:number|no\.?|id|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-]{3,})",
+    ))
+    return {"invoice_no": invoice_no, "order_no": order_no}
+
+
 def parse_fields(text: str, filename: str):
     """Best-effort invoice extraction; always verify OCR results."""
     lines = [
@@ -711,6 +764,8 @@ def parse_fields(text: str, filename: str):
             seller = candidate.title()
             break
 
+    references = parse_reference_numbers(text)
+
     return {
         "product": product,
         "seller": seller,
@@ -718,6 +773,8 @@ def parse_fields(text: str, filename: str):
         "amount": amount,
         "warranty_months": parse_warranty_months(text),
         "warranty_end": parse_warranty_end(text),
+        "invoice_no": references["invoice_no"],
+        "order_no": references["order_no"],
     }
 
 def add_months(original_date: date, months: int) -> date:
@@ -776,6 +833,36 @@ def row_to_dict(row):
 
     )
 
+    # Bills saved before invoice/order numbers were captured can still
+    # show them: re-read the numbers from the bill's own saved text.
+    if not result.get("invoice_no") or not result.get("order_no"):
+
+        saved_text = result.get("extracted_text") or ""
+
+        if saved_text:
+
+            try:
+
+                references = parse_reference_numbers(saved_text)
+
+                if not result.get("invoice_no"):
+
+                    result["invoice_no"] = references["invoice_no"]
+
+                if not result.get("order_no"):
+
+                    result["order_no"] = references["order_no"]
+
+            except Exception:
+
+                result.setdefault("invoice_no", "")
+
+                result.setdefault("order_no", "")
+
+    result.setdefault("invoice_no", "")
+
+    result.setdefault("order_no", "")
+
     return result
 
 class BillUpdate(BaseModel):
@@ -791,6 +878,10 @@ class BillUpdate(BaseModel):
     warranty_months: Optional[int] = None
 
     category: Optional[str] = None
+
+    invoice_no: Optional[str] = None
+
+    order_no: Optional[str] = None
 
 # --------------------------------------------------
 
@@ -1475,6 +1566,8 @@ def scan_gmail(request: Request):
 
                                     warranty_months, warranty_end, category,
 
+                                    invoice_no, order_no,
+
                                     cloudinary_url, public_id,
 
                                     original_filename, extracted_text,
@@ -1483,7 +1576,7 @@ def scan_gmail(request: Request):
 
                                 )
 
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                                 """,
 
@@ -1506,6 +1599,10 @@ def scan_gmail(request: Request):
                                     gmail_warranty_end,
 
                                     "Other",
+
+                                    fields.get("invoice_no", ""),
+
+                                    fields.get("order_no", ""),
 
                                     uploaded.get("secure_url", ""),
 
@@ -1930,13 +2027,15 @@ async def upload_bill(
 
                     warranty_months, warranty_end, category,
 
+                    invoice_no, order_no,
+
                     cloudinary_url, public_id, original_filename,
 
                     extracted_text, created_at, owner_email
 
                 )
 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                 """,
 
@@ -1955,6 +2054,10 @@ async def upload_bill(
                     warranty_end,
 
                     category,
+
+                    fields.get("invoice_no", ""),
+
+                    fields.get("order_no", ""),
 
                     uploaded.get("secure_url", ""),
 
@@ -2096,7 +2199,9 @@ def update_bill(
 
             SET product=?, seller=?, purchase_date=?, amount=?,
 
-                warranty_months=?, warranty_end=?, category=?
+                warranty_months=?, warranty_end=?, category=?,
+
+                invoice_no=?, order_no=?
 
             WHERE id=?
 
@@ -2117,6 +2222,10 @@ def update_bill(
                 warranty_end,
 
                 values["category"],
+
+                values.get("invoice_no") or "",
+
+                values.get("order_no") or "",
 
                 bill_id,
 
