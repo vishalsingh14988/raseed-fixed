@@ -332,7 +332,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ product: bill.product || "", seller: bill.seller || "", purchase_date: bill.purchase_date || "", amount: bill.amount ?? "", warranty_months: bill.warranty_months ?? 0, category: bill.category || "Other" });
+  const [form, setForm] = useState({ product: bill.product || "", seller: bill.seller || "", purchase_date: bill.purchase_date || "", amount: bill.amount ?? "", warranty_months: bill.warranty_months ?? 0, category: bill.category || "Other", invoice_no: bill.invoice_no || "", order_no: bill.order_no || "" });
   function change(key, value) { setForm(old => ({ ...old, [key]: value })); }
   async function save() {
     setSaving(true); setError("");
@@ -352,10 +352,13 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
       <label>Amount (₹)<input type="number" min="0" step="0.01" value={form.amount} onChange={e => change("amount", e.target.value)} /></label>
       <label>Warranty months<input type="number" min="0" max="120" value={form.warranty_months} onChange={e => change("warranty_months", e.target.value)} /></label>
       <label>Category<input value={form.category} onChange={e => change("category", e.target.value)} /></label>
+      <label>Invoice number<input value={form.invoice_no} onChange={e => change("invoice_no", e.target.value)} placeholder="e.g. AF26GJ317452231" /></label>
+      <label>Order number<input value={form.order_no} onChange={e => change("order_no", e.target.value)} placeholder="e.g. FN5954801329" /></label>
     </div> : <div className="detail-grid">
       <div><small>PRODUCT</small><b>{bill.product || "—"}</b></div><div><small>AMOUNT</small><b>{money(bill.amount)}</b></div>
       <div><small>SELLER</small><b>{bill.seller || "—"}</b></div><div><small>PURCHASE DATE</small><b>{formatDate(bill.purchase_date)}</b></div>
       <div><small>WARRANTY DURATION</small><b>{bill.warranty_months ? `${bill.warranty_months} months` : "Not specified"}</b></div><div><small>WARRANTY ENDS</small><b>{formatDate(bill.warranty_end)}</b></div>
+      <div><small>INVOICE NUMBER</small><b>{bill.invoice_no || "—"}</b></div><div><small>ORDER NUMBER</small><b>{bill.order_no || "—"}</b></div>
     </div>}
     {bill.cloudinary_url && <a className="file-link" href={bill.cloudinary_url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Open original bill</a>}
     {error && <div className="inline-error">{error}</div>}
