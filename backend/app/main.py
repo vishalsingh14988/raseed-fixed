@@ -591,17 +591,43 @@ def parse_fields(text: str, filename: str):
         if line.strip()
     ]
 
-    # Prefer a plausible product line, skipping common invoice headings.
+    # Prefer a plausible product line, skipping common invoice headings,
+    # address/contact lines and table headers. Item rows in Indian tax
+    # invoices sit just after the HSN table header, so look there first.
+    ignored = ("invoice", "receipt", "order id", "order number", "gstin",
+               "bill to", "ship to", "ship from", "tax invoice", "date:",
+               "amount", "subtotal", "original for recipient", "duplicate for",
+               "seller", "consignor", "customer support", "customer care",
+               "email", "mobile", "state code", "place of supply",
+               "payment mode", "carrier", "awb", "hsn", "qty", "price",
+               "unit", "mrp", "discount", "taxable", "tax amt",
+               "limited", "ltd.", " pvt", "hostel", "sector",
+               "floor", "total in words")
+
+    def _looks_like_product(line: str) -> bool:
+        low = line.lower()
+        if low in KNOWN_SELLERS:
+            return False
+        if any(word in low for word in ignored):
+            return False
+        if re.search(r"\b\d{6}\b", line):  # PIN code -> address line
+            return False
+        if sum(c.isdigit() for c in line) > 4:  # mostly numbers/codes
+            return False
+        return 3 < len(line) < 90
+
     product = ""
-    ignored = ("invoice", "receipt", "order id", "gstin", "bill to",
-               "ship to", "tax invoice", "date:", "amount", "subtotal")
-    for line in lines:
-        if line.strip().lower() in KNOWN_SELLERS:
-            continue
-        if any(word in line.lower() for word in ignored):
-            continue
-        if 3 < len(line) < 90:
-            product = line
+    hsn_idx = next((i for i, ln in enumerate(lines) if "hsn" in ln.lower()), None)
+    search_windows = []
+    if hsn_idx is not None:
+        search_windows.append(lines[hsn_idx:hsn_idx + 15])
+    search_windows.append(lines)
+    for window in search_windows:
+        for line in window:
+            if _looks_like_product(line):
+                product = line
+                break
+        if product:
             break
     filename_product = _filename_product(filename)
     if filename_product and (not product or product.strip().lower() in KNOWN_SELLERS
@@ -611,17 +637,32 @@ def parse_fields(text: str, filename: str):
         product = filename_product or "New bill"
 
     amount = None
-    labelled_total = re.search(
-        r"(?:grand total|total amount|amount payable|invoice total|amount paid|total payable)"
-        r"\s*[:\-]?\s*(?:₹|INR|Rs\.?)?\s*([0-9,]+(?:\.[0-9]{1,2})?)",
-        text,
-        re.IGNORECASE,
+    # Indian invoices phrase the payable total many different ways
+    # ("NET PAYABLE AMOUNT: 331.30", "TOTAL INVOICE VALUE", ...), often as a
+    # plain number with no ₹/Rs symbol. Try the labels in priority order and
+    # accept the first positive value sitting right after the label (the
+    # number may be on the following line when PDF columns are reordered).
+    total_labels = (
+        "net payable amount", "net payable", "payable amount",
+        "total invoice value", "invoice value", "grand total",
+        "amount payable", "total amount", "amount paid", "total payable",
+        "invoice total", "bill total", "total",
     )
-    if labelled_total:
-        try:
-            amount = float(labelled_total.group(1).replace(",", ""))
-        except ValueError:
-            amount = None
+    for label in total_labels:
+        for match in re.finditer(
+            re.escape(label) + r"\s*[:\-]?\s*(?:₹|INR|Rs\.?)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
+            text,
+            re.IGNORECASE,
+        ):
+            try:
+                value = float(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if value > 0:
+                amount = value
+                break
+        if amount is not None:
+            break
     if amount is None:
         amount_matches = re.findall(
             r"(?:₹|INR|Rs\.?)\s*([0-9,]+(?:\.[0-9]{1,2})?)",
