@@ -154,7 +154,161 @@ def db():
 
     return conn
 
+# --------------------------------------------------
+
+# VAULT BACKUP — permanent storage for the bills database
+
+#
+
+# Render's free services have temporary local storage: every redeploy
+
+# deletes the SQLite file, which used to wipe the whole vault. The bill
+
+# files themselves already live permanently in Cloudinary, so the
+
+# database file is backed up there too: after every change it is
+
+# uploaded to Cloudinary, and when the server starts with no local
+
+# database it downloads the backup back. If Cloudinary is not
+
+# configured, the app simply behaves as before (local file only).
+
+# --------------------------------------------------
+
+VAULT_BACKUP_PUBLIC_ID = "billproof/db/vault-backup.db"
+
+_vault_restore_attempted = False
+
+vault_restored_from_backup = False
+
+def _cloudinary_env():
+
+    return (
+
+        os.getenv("CLOUDINARY_CLOUD_NAME"),
+
+        os.getenv("CLOUDINARY_API_KEY"),
+
+        os.getenv("CLOUDINARY_API_SECRET"),
+
+    )
+
+def restore_vault_if_missing():
+
+    """Download the vault backup from Cloudinary when starting empty."""
+
+    global _vault_restore_attempted, vault_restored_from_backup
+
+    if _vault_restore_attempted:
+
+        return
+
+    _vault_restore_attempted = True
+
+    try:
+
+        if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+
+            return
+
+        cloud_name, api_key, api_secret = _cloudinary_env()
+
+        if not all([cloud_name, api_key, api_secret]):
+
+            return
+
+        # Ask Cloudinary's Admin API where the current backup file lives.
+
+        meta = httpx.get(
+
+            f"https://api.cloudinary.com/v1_1/{cloud_name}/resources/raw/upload/{VAULT_BACKUP_PUBLIC_ID}",
+
+            auth=(api_key, api_secret),
+
+            timeout=30,
+
+        )
+
+        if meta.status_code != 200:
+
+            print("VAULT: no backup found yet (status", meta.status_code, ")")
+
+            return
+
+        secure_url = meta.json().get("secure_url")
+
+        if not secure_url:
+
+            return
+
+        data = httpx.get(secure_url, timeout=60).content
+
+        if not data.startswith(b"SQLite format 3\x00"):
+
+            print("VAULT: downloaded backup is not a SQLite file; ignoring it")
+
+            return
+
+        DB_PATH.write_bytes(data)
+
+        vault_restored_from_backup = True
+
+        print("VAULT: restored", len(data), "bytes of bill data from Cloudinary backup")
+
+    except Exception as exc:
+
+        print("VAULT: restore skipped:", str(exc)[:160])
+
+def backup_vault():
+
+    """Upload the current database file to Cloudinary (best effort)."""
+
+    try:
+
+        cloud_name, api_key, api_secret = _cloudinary_env()
+
+        if not all([cloud_name, api_key, api_secret]):
+
+            return
+
+        if not DB_PATH.exists():
+
+            return
+
+        cloudinary.config(
+
+            cloud_name=cloud_name,
+
+            api_key=api_key,
+
+            api_secret=api_secret,
+
+            secure=True,
+
+        )
+
+        cloudinary.uploader.upload(
+
+            str(DB_PATH),
+
+            resource_type="raw",
+
+            public_id=VAULT_BACKUP_PUBLIC_ID,
+
+            overwrite=True,
+
+        )
+
+        print("VAULT: backup saved to Cloudinary")
+
+    except Exception as exc:
+
+        print("VAULT: backup failed:", str(exc)[:160])
+
 def init_db():
+
+    restore_vault_if_missing()
 
     with db() as conn:
 
@@ -1668,6 +1822,10 @@ def scan_gmail(request: Request):
 
                     os.unlink(temp_path)
 
+        if imported:
+
+            backup_vault()
+
         return {
 
             "email": email,
@@ -1733,6 +1891,14 @@ def health():
         "service": "Raseed API",
 
         "ocr": ocr_status(),
+
+        "vault": {
+
+            "cloud_backup_configured": all(_cloudinary_env()),
+
+            "restored_from_backup": vault_restored_from_backup,
+
+        },
 
     }
 
@@ -2085,6 +2251,8 @@ async def upload_bill(
 
             ).fetchone()
 
+        backup_vault()
+
         return row_to_dict(row)
 
     except HTTPException:
@@ -2241,6 +2409,8 @@ def update_bill(
 
         ).fetchone()
 
+    backup_vault()
+
     return row_to_dict(row)
 
 # --------------------------------------------------
@@ -2322,6 +2492,8 @@ def delete_bill(
             (bill_id,),
 
         )
+
+    backup_vault()
 
     return {"deleted": True}
 
