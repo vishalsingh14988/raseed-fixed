@@ -697,6 +697,8 @@ def extract_text(path: str, content_type: str) -> str:
 def parse_invoice_date(value: str) -> str:
     """Parse common invoice date formats into YYYY-MM-DD."""
     value = re.sub(r"\s+", " ", value.strip()).replace(",", "")
+    # Ordinal days: "Oct 21st 2026", "1st Jan 2026" -> "Oct 21 2026".
+    value = re.sub(r"(\d{1,2})(?:st|nd|rd|th)\b", r"\1", value, flags=re.IGNORECASE)
     formats = (
         "%d-%m-%Y", "%d-%m-%y", "%d/%m/%Y", "%d/%m/%y",
         "%Y-%m-%d", "%d %B %Y", "%d %b %Y",
@@ -742,8 +744,8 @@ def parse_warranty_end(text: str) -> str:
         r"(?:warranty\s*)?(?:end|expiry|expiration|expires|valid\s*(?:until|till|upto))"
         r"\s*(?:date|on)?\s*[:\-]?\s*"
         r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
-        r"\d{1,2}\s+[A-Za-z]+\s+\d{4}|"
-        r"[A-Za-z]+\s+\d{1,2},?\s+\d{4})"
+        r"\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}|"
+        r"[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})"
     )
     match = re.search(date_pattern, text, re.IGNORECASE)
     return parse_invoice_date(match.group(1)) if match else ""
@@ -762,6 +764,7 @@ KNOWN_SELLERS = (
     "amazon india", "amazon", "flipkart", "croma", "reliance digital",
     "vijay sales", "ikea", "myntra", "blinkit", "ajio", "nykaa",
     "samsung", "apple", "decathlon", "bigbasket", "zepto", "swiggy", "zomato",
+    "rapido", "ola", "uber",
 )
 
 
@@ -796,15 +799,32 @@ def parse_reference_numbers(text: str):
     Service centres ask for these first, so they are worth capturing.
     Only values sitting right next to their label are accepted.
     """
+    label_words = {
+        "invoice", "order", "number", "date", "total", "amount", "state",
+        "bill", "tax", "id", "no", "the", "customer", "place", "supply",
+        "category", "name", "gst", "gstin",
+    }
+
+    def _valid(value):
+        value = value.strip(" .,-")
+        if len(value) < 4 or value.lower() in label_words:
+            return ""
+        # Real invoice/order numbers contain a digit. This guard also
+        # stops the next label being captured as the value (e.g. the
+        # Rapido layout, where "Invoice No." is followed by "Invoice
+        # Date" on the next line and the real value sits elsewhere).
+        if not any(ch.isdigit() for ch in value):
+            return ""
+        # Reject obvious non-numbers (e.g. a date used as the value).
+        if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", value):
+            return ""
+        return value
+
     def _find(patterns):
         for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                value = match.group(1).strip(" .,-")
-                # Reject obvious non-numbers (e.g. a date used as the value).
-                if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", value):
-                    continue
-                if len(value) >= 4:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                value = _valid(match.group(1))
+                if value:
                     return value
         return ""
 
@@ -812,9 +832,12 @@ def parse_reference_numbers(text: str):
         r"tax\s*invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,})",
         r"invoice\s*(?:no\.?|number|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,})",
         r"\binv\.?\s*(?:no\.?|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-/]{3,})",
+        # Some PDFs (Rapido) print the value on the line ABOVE its label.
+        r"\n\s*([A-Za-z0-9][A-Za-z0-9\-/]{5,})\s*\n\s*invoice\s*(?:no\.?|number|#)\b",
     ))
     order_no = _find((
         r"order\s*(?:number|no\.?|id|#)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\-]{3,})",
+        r"\n\s*([A-Za-z0-9][A-Za-z0-9\-]{5,})\s*\n\s*order\s*(?:number|no\.?|id|#)\b",
     ))
     return {"invoice_no": invoice_no, "order_no": order_no}
 
@@ -838,7 +861,11 @@ def parse_fields(text: str, filename: str):
                "payment mode", "carrier", "awb", "hsn", "qty", "price",
                "unit", "mrp", "discount", "taxable", "tax amt",
                "limited", "ltd.", " pvt", "hostel", "sector",
-               "floor", "total in words")
+               "floor", "total in words",
+               "distance", "duration", "payment summary", "bill details",
+               "ride id", "time of ride", "ride charge", "booking fee",
+               "convenience", "you paid", "inclusive of taxes",
+               "thank you", "captain")
 
     def _looks_like_product(line: str) -> bool:
         low = line.lower()
@@ -849,6 +876,12 @@ def parse_fields(text: str, filename: str):
         if re.search(r"\b\d{6}\b", line):  # PIN code -> address line
             return False
         if sum(c.isdigit() for c in line) > 4:  # mostly numbers/codes
+            return False
+        # A line that is only a money value ("₹ 79.82") is not a product.
+        if re.fullmatch(r"[-+]?\s*(?:₹|rs\.?|inr)?\s*[0-9][0-9,]*\.?[0-9]*\s*", low):
+            return False
+        # A pure measurement ("9.86 kms", "24.12 mins") is not a product.
+        if re.fullmatch(r"\d+(?:\.\d+)?\s*(?:kms?|km|mins?|minutes|hrs?|hours|kg|gms?|ml|l)\.?", low):
             return False
         return 3 < len(line) < 90
 
@@ -916,16 +949,16 @@ def parse_fields(text: str, filename: str):
     purchase_date = ""
     date_patterns = (
         r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
-        r"\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b",
-        r"\b[A-Za-z]+\s+\d{1,2},?\s+\d{4}\b",
+        r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}\b",
+        r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
         r"\b\d{4}-\d{1,2}-\d{1,2}\b",
     )
     # Prefer dates near a purchase/invoice label.
     labelled = re.search(
         r"(?:invoice date|purchase date|order date|date of purchase|date)\s*[:\-]?\s*"
         r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
-        r"\d{1,2}\s+[A-Za-z]+\s+\d{4}|"
-        r"[A-Za-z]+\s+\d{1,2},?\s+\d{4}|"
+        r"\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}|"
+        r"[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|"
         r"\d{4}-\d{1,2}-\d{1,2})",
         text,
         re.IGNORECASE,
@@ -943,11 +976,29 @@ def parse_fields(text: str, filename: str):
     seller = ""
     lower_text = (text + " " + filename).lower()
     for candidate in KNOWN_SELLERS:
-        if candidate in lower_text:
+        # Short names ("ola", "uber") need word boundaries — as plain
+        # substrings they also hide inside words like "chocolate".
+        if len(candidate) <= 4:
+            found = re.search(rf"\b{re.escape(candidate)}\b", lower_text)
+        else:
+            found = candidate in lower_text
+        if found:
             seller = candidate.title()
             break
 
     references = parse_reference_numbers(text)
+    if not references["invoice_no"]:
+        # Last resort: ride/food invoices often carry the number in the
+        # filename itself, e.g. ORDER_INVOICE_RD17925806574029425.pdf.
+        name_match = re.search(r"[A-Za-z]{2}\d{8,}|\d{4,}[A-Za-z]{2}\d+", filename or "")
+        if name_match:
+            references["invoice_no"] = name_match.group(0)
+
+    # Ride bills have no product line to find — the service IS the item.
+    if seller in ("Rapido", "Ola", "Uber") and (
+        "ride charge" in lower_text or " kms" in lower_text
+    ):
+        product = f"{seller} ride"
 
     return {
         "product": product,
@@ -1031,7 +1082,17 @@ def warranty_status(end_text, warranty_months=None, warranty_lifetime=0):
 # text. Everything is best-effort: with no key, or on any API failure,
 # the upload simply uses the normal OCR text exactly as before.
 
-AI_READER_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite")
+# Newest first. Google limits older models (2.5 and below) to projects
+# that used them before, so a freshly created API key can only use the
+# current models — the list must start with those.
+AI_READER_MODELS = (
+    "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash",
+    "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash",
+)
+
+# Diagnostics for /api/health: what the AI reader last did, so a silent
+# fallback (e.g. a retired model name) can be spotted without server logs.
+_ai_reader_state = {"last_status": "not tried yet", "last_model": "", "last_error": ""}
 
 AI_READER_PROMPT = (
     "You are reading a photo of an Indian purchase bill or invoice. "
@@ -1139,18 +1200,38 @@ def ai_read_bill(data: bytes, content_type: str) -> dict:
                     json=payload,
                 )
             if response.status_code != 200:
+                _ai_reader_state.update({
+                    "last_status": "failed",
+                    "last_model": model,
+                    "last_error": f"HTTP {response.status_code}: {response.text[:160]}",
+                })
                 continue
             body = response.json()
             parts = body["candidates"][0]["content"]["parts"]
             raw = "".join(part.get("text", "") for part in parts)
             parsed = _parse_ai_json(raw)
             if not parsed:
+                _ai_reader_state.update({
+                    "last_status": "failed",
+                    "last_model": model,
+                    "last_error": "reply was not valid JSON",
+                })
                 continue
+            _ai_reader_state.update({
+                "last_status": "ok",
+                "last_model": model,
+                "last_error": "",
+            })
             return {
                 "text": str(parsed.get("text") or ""),
                 "fields": _normalize_ai_fields(parsed),
             }
-        except Exception:
+        except Exception as exc:
+            _ai_reader_state.update({
+                "last_status": "failed",
+                "last_model": model,
+                "last_error": f"{type(exc).__name__}: {exc}"[:200],
+            })
             continue
     return {}
 
@@ -2091,6 +2172,12 @@ def health():
         "ai_reader": {
 
             "configured": bool(_gemini_api_key()),
+
+            "last_status": _ai_reader_state["last_status"],
+
+            "last_model": _ai_reader_state["last_model"],
+
+            "last_error": _ai_reader_state["last_error"],
 
         },
 
