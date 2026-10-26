@@ -106,6 +106,24 @@ GOOGLE_SCOPES = [
 
 ]
 
+# Sign-in only: identity scopes. Non-sensitive, so a published app lets
+
+# anyone log in with their own Google account (no Google verification,
+
+# no test-user list). Gmail access is requested separately, only when
+
+# a user connects Gmail for bill scanning.
+
+LOGIN_SCOPES = [
+
+    "openid",
+
+    "email",
+
+    "profile",
+
+]
+
 app = FastAPI(title="Raseed API", version="0.3.0")
 
 app.add_middleware(
@@ -1402,6 +1420,66 @@ async def google_login(request: Request):
 
     request.session["oauth_state"] = state
 
+    request.session["oauth_purpose"] = "login"
+
+    params = {
+
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+
+        "redirect_uri": redirect_uri,
+
+        "response_type": "code",
+
+        "scope": " ".join(LOGIN_SCOPES),
+
+        "prompt": "select_account",
+
+        "state": state,
+
+    }
+
+    return RedirectResponse(
+
+        "https://accounts.google.com/o/oauth2/v2/auth?"
+
+        + urlencode(params)
+
+    )
+
+@app.get("/api/auth/gmail/connect")
+
+async def gmail_connect(request: Request):
+
+    """Separate, optional step: connect Gmail for bill scanning.
+
+    Requests the Gmail read scope, so Google limits it while the app
+
+    is unverified - the plain login above does not need it."""
+
+    if not google_oauth_configured():
+
+        raise HTTPException(
+
+            status_code=503,
+
+            detail="Add Google OAuth credentials to backend/.env.",
+
+        )
+
+    redirect_uri = os.getenv(
+
+        "GOOGLE_REDIRECT_URI",
+
+        "http://localhost:8000/api/auth/google/callback",
+
+    )
+
+    state = os.urandom(24).hex()
+
+    request.session["oauth_state"] = state
+
+    request.session["oauth_purpose"] = "gmail"
+
     params = {
 
         "client_id": os.getenv("GOOGLE_CLIENT_ID"),
@@ -1465,6 +1543,8 @@ async def google_callback(request: Request):
             detail="Google sign-in state check failed. Please try again."
 
         )
+
+    purpose = request.session.get("oauth_purpose", "gmail")
 
     redirect_uri = os.getenv(
 
@@ -1552,67 +1632,68 @@ async def google_callback(request: Request):
 
         )
 
-    with db() as conn:
+    if purpose == "gmail":
+        with db() as conn:
 
-        existing = conn.execute(
+            existing = conn.execute(
 
-            "SELECT refresh_token FROM gmail_connections WHERE email=?",
+                "SELECT refresh_token FROM gmail_connections WHERE email=?",
 
-            (email,),
+                (email,),
 
-        ).fetchone()
+            ).fetchone()
 
-        refresh_token = token_data.get("refresh_token")
+            refresh_token = token_data.get("refresh_token")
 
-        if not refresh_token and existing:
+            if not refresh_token and existing:
 
-            refresh_token = existing["refresh_token"]
+                refresh_token = existing["refresh_token"]
 
-        conn.execute(
+            conn.execute(
 
-            """
+                """
 
-            INSERT INTO gmail_connections (
+                INSERT INTO gmail_connections (
 
-                email, access_token, refresh_token,
+                    email, access_token, refresh_token,
 
-                token_uri, scope, updated_at
+                    token_uri, scope, updated_at
+
+                )
+
+                VALUES (?, ?, ?, ?, ?, ?)
+
+                ON CONFLICT(email) DO UPDATE SET
+
+                    access_token=excluded.access_token,
+
+                    refresh_token=excluded.refresh_token,
+
+                    token_uri=excluded.token_uri,
+
+                    scope=excluded.scope,
+
+                    updated_at=excluded.updated_at
+
+                """,
+
+                (
+
+                    email,
+
+                    token_data["access_token"],
+
+                    refresh_token or "",
+
+                    "https://oauth2.googleapis.com/token",
+
+                    token_data.get("scope", ""),
+
+                    datetime.utcnow().isoformat(timespec="seconds"),
+
+                ),
 
             )
-
-            VALUES (?, ?, ?, ?, ?, ?)
-
-            ON CONFLICT(email) DO UPDATE SET
-
-                access_token=excluded.access_token,
-
-                refresh_token=excluded.refresh_token,
-
-                token_uri=excluded.token_uri,
-
-                scope=excluded.scope,
-
-                updated_at=excluded.updated_at
-
-            """,
-
-            (
-
-                email,
-
-                token_data["access_token"],
-
-                refresh_token or "",
-
-                "https://oauth2.googleapis.com/token",
-
-                token_data.get("scope", ""),
-
-                datetime.utcnow().isoformat(timespec="seconds"),
-
-            ),
-
-        )
 
     # Remember the user (with the name Google gives us) so the app can
 
@@ -1647,6 +1728,8 @@ async def google_callback(request: Request):
     request.session["owner_email"] = email
 
     request.session.pop("oauth_state", None)
+
+    request.session.pop("oauth_purpose", None)
 
     return RedirectResponse(FRONTEND_ORIGIN)
 
