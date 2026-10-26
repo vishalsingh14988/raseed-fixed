@@ -438,6 +438,24 @@ def init_db():
 
         """)
 
+        conn.execute("""
+
+            CREATE TABLE IF NOT EXISTS users (
+
+                email TEXT PRIMARY KEY,
+
+                name TEXT DEFAULT '',
+
+                purpose TEXT DEFAULT '',
+
+                age INTEGER,
+
+                created_at TEXT DEFAULT ''
+
+            )
+
+        """)
+
         # Prevent the same Gmail attachment from being imported twice.
 
         conn.execute("""
@@ -473,6 +491,54 @@ def google_oauth_configured() -> bool:
         and os.getenv("GOOGLE_CLIENT_SECRET")
 
     )
+
+def get_user_profile(email: str) -> dict:
+
+    """Stored onboarding profile for a signed-in user."""
+
+    with db() as conn:
+
+        row = conn.execute(
+
+            "SELECT email, name, purpose, age FROM users WHERE email=?",
+
+            (email,),
+
+        ).fetchone()
+
+    if not row:
+
+        return {"name": "", "purpose": "", "age": None}
+
+    profile = dict(row)
+
+    return {
+
+        "name": profile.get("name") or "",
+
+        "purpose": profile.get("purpose") or "",
+
+        "age": profile.get("age"),
+
+    }
+
+def profile_complete(profile: dict) -> bool:
+
+    return bool(
+
+        profile.get("name") and profile.get("purpose") and profile.get("age")
+
+    )
+
+def guest_blocked(owner: str) -> bool:
+
+    """Once Google sign-in is switched on, signed-out visitors (the
+
+    local-demo owner) see an empty vault and cannot change bills.
+
+    Before sign-in is configured the app stays open, as before."""
+
+    return owner == "local-demo" and google_oauth_configured()
 
 def configure_cloudinary():
 
@@ -1548,6 +1614,36 @@ async def google_callback(request: Request):
 
         )
 
+    # Remember the user (with the name Google gives us) so the app can
+
+    # ask the first-time questions and personalise the vault.
+
+    with db() as conn:
+
+        conn.execute(
+
+            """
+
+            INSERT INTO users (email, name, created_at) VALUES (?, ?, ?)
+
+            ON CONFLICT(email) DO UPDATE SET
+
+                name = CASE WHEN users.name = '' THEN excluded.name ELSE users.name END
+
+            """,
+
+            (
+
+                email,
+
+                (profile.get("name") or "").strip(),
+
+                datetime.utcnow().isoformat(timespec="seconds"),
+
+            ),
+
+        )
+
     request.session["owner_email"] = email
 
     request.session.pop("oauth_state", None)
@@ -1560,11 +1656,157 @@ def auth_me(request: Request):
 
     email = current_owner(request)
 
+    configured = google_oauth_configured()
+
     if email == "local-demo":
 
-        return {"connected": False, "email": None}
+        return {
 
-    return {"connected": True, "email": email}
+            "connected": False,
+
+            "email": None,
+
+            "auth_configured": configured,
+
+            "profile": None,
+
+            "profile_complete": False,
+
+        }
+
+    profile = get_user_profile(email)
+
+    return {
+
+        "connected": True,
+
+        "email": email,
+
+        "auth_configured": configured,
+
+        "profile": profile,
+
+        "profile_complete": profile_complete(profile),
+
+    }
+
+class ProfileUpdate(BaseModel):
+
+    name: str
+
+    purpose: str
+
+    age: int
+
+@app.post("/api/auth/profile")
+
+def save_profile(payload: ProfileUpdate, request: Request):
+
+    email = current_owner(request)
+
+    if email == "local-demo":
+
+        raise HTTPException(
+
+            status_code=401,
+
+            detail="Sign in with Google first.",
+
+        )
+
+    name = payload.name.strip()
+
+    purpose = payload.purpose.strip()
+
+    if not name or not purpose:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Please tell us your name and what you will use Raseed for.",
+
+        )
+
+    if payload.age < 5 or payload.age > 120:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Please enter a valid age.",
+
+        )
+
+    was_complete = profile_complete(get_user_profile(email))
+
+    with db() as conn:
+
+        conn.execute(
+
+            """
+
+            INSERT INTO users (email, name, purpose, age, created_at)
+
+            VALUES (?, ?, ?, ?, ?)
+
+            ON CONFLICT(email) DO UPDATE SET
+
+                name=excluded.name, purpose=excluded.purpose, age=excluded.age
+
+            """,
+
+            (
+
+                email,
+
+                name,
+
+                purpose,
+
+                payload.age,
+
+                datetime.utcnow().isoformat(timespec="seconds"),
+
+            ),
+
+        )
+
+        if not was_complete:
+
+            # First-time setup: bills saved before accounts existed (the
+
+            # shared local-demo vault) become this user's own bills, so
+
+            # signing in never makes existing bills disappear.
+
+            conn.execute(
+
+                "UPDATE bills SET owner_email=? WHERE owner_email='local-demo'",
+
+                (email,),
+
+            )
+
+    if not was_complete:
+
+        backup_vault()
+
+    profile = get_user_profile(email)
+
+    return {
+
+        "connected": True,
+
+        "email": email,
+
+        "auth_configured": google_oauth_configured(),
+
+        "profile": profile,
+
+        "profile_complete": True,
+
+    }
 
 @app.post("/api/auth/logout")
 
@@ -2181,6 +2423,12 @@ def health():
 
         },
 
+        "auth": {
+
+            "google_configured": google_oauth_configured(),
+
+        },
+
     }
 
 # --------------------------------------------------
@@ -2202,6 +2450,10 @@ def list_bills(
 ):
 
     owner = current_owner(request)
+
+    if guest_blocked(owner):
+
+        return []
 
     with db() as conn:
 
@@ -2316,6 +2568,16 @@ async def upload_bill(
     extracted_text_override: str = Form(""),
 
 ):
+
+    if guest_blocked(current_owner(request)):
+
+        raise HTTPException(
+
+            status_code=401,
+
+            detail="Please login first to add bills.",
+
+        )
 
     allowed_types = {
 
@@ -2606,6 +2868,16 @@ def update_bill(
 
     owner = current_owner(request)
 
+    if guest_blocked(owner):
+
+        raise HTTPException(
+
+            status_code=401,
+
+            detail="Please login first.",
+
+        )
+
     with db() as conn:
 
         old = conn.execute(
@@ -2741,6 +3013,16 @@ def delete_bill(
 ):
 
     owner = current_owner(request)
+
+    if guest_blocked(owner):
+
+        raise HTTPException(
+
+            status_code=401,
+
+            detail="Please login first.",
+
+        )
 
     with db() as conn:
 
