@@ -138,9 +138,21 @@ app.add_middleware(
 
     ),
 
-    same_site="lax",
+    # The frontend lives on a different Render subdomain, and
 
-    https_only=False,
+    # onrender.com is a public suffix - so the two services count as
+
+    # DIFFERENT sites for cookies. A Lax session cookie would never
+
+    # be sent by the frontend's API calls and login would appear to
+
+    # do nothing (the site would stay in Guest mode forever).
+
+    # SameSite=None + Secure makes the session work across them.
+
+    same_site="none",
+
+    https_only=True,
 
 )
 
