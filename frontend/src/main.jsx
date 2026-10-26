@@ -14,8 +14,29 @@ const NAV = [
   [Bell, "Reminders"], [Settings, "Settings"]
 ];
 
+// Sign-in is remembered with a token kept in this browser, because the
+// login cookie alone is unreliable on phones: the website and the API are
+// different sites, and many mobile browsers block cross-site cookies,
+// which made signed-in users flip back to "Guest" after a refresh.
+const TOKEN_KEY = "raseed_token";
+function storedToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
+}
+function captureLoginToken() {
+  // After Google sign-in the API returns the browser to this site with
+  // the token in the URL fragment; store it and clean the address bar.
+  if (!window.location.hash.includes("raseed_token=")) return;
+  const match = window.location.hash.match(/raseed_token=([^&]+)/);
+  if (match) {
+    try { localStorage.setItem(TOKEN_KEY, decodeURIComponent(match[1])); } catch { /* private mode */ }
+  }
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+}
 async function apiFetch(path, options = {}) {
-  return fetch(`${API}${path}`, { ...options, credentials: "include" });
+  const headers = { ...(options.headers || {}) };
+  const token = storedToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetch(`${API}${path}`, { ...options, headers, credentials: "include" });
 }
 function formatDate(value) {
   if (!value) return "—";
@@ -53,7 +74,10 @@ function App() {
   const guest = !!auth && auth.auth_configured && !auth.connected;
   const guestRef = React.useRef(false);
   guestRef.current = guest;
-  const firstName = auth?.profile?.name ? auth.profile.name.split(" ")[0] : guest ? "Guest" : "Urvi";
+  // Until the sign-in check answers, greet neutrally: showing a name
+  // here made it look as if the user was signed in, then "flip" to
+  // Guest once the real answer arrived.
+  const firstName = auth?.profile?.name ? auth.profile.name.split(" ")[0] : guest ? "Guest" : "friend";
 
   async function loadBills() {
     setLoading(true);
@@ -87,13 +111,30 @@ function App() {
 
   useEffect(() => {
     // Who is signed in? Drives the login gate and the first-time questions.
-    apiFetch("/api/auth/me")
-      .then(r => r.json())
-      .then(d => {
+    captureLoginToken();
+    let cancelled = false;
+    async function checkAuth(attempt) {
+      try {
+        const r = await apiFetch("/api/auth/me");
+        const d = await r.json();
+        if (cancelled) return;
+        // A saved token the server no longer accepts is cleared, so the
+        // site settles into honest Guest mode instead of flip-flopping.
+        if (!d?.connected && storedToken()) {
+          try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+        }
         setAuth(d);
         if (d?.profile?.name) setProfileForm(f => ({ ...f, name: d.profile.name }));
-      })
-      .catch(() => setAuth({ connected: false, auth_configured: false, profile: null, profile_complete: false }));
+      } catch (err) {
+        if (cancelled) return;
+        // The free server may be waking up; one retry before giving up,
+        // so a slow first answer never throws a signed-in user to Guest.
+        if (attempt === 0) { setTimeout(() => checkAuth(1), 2500); return; }
+        setAuth({ connected: false, auth_configured: false, profile: null, profile_complete: false });
+      }
+    }
+    checkAuth(0);
+    return () => { cancelled = true; };
   }, []);
 
   async function saveProfile(e) {
@@ -119,6 +160,7 @@ function App() {
   }
 
   async function logout() {
+    try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
     try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { /* reload anyway */ }
     window.location.reload();
   }
