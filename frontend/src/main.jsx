@@ -34,6 +34,7 @@ function Status({ status }) {
 function App() {
   const [bills, setBills] = useState([]);
   const [query, setQuery] = useState("");
+  const [searchFocus, setSearchFocus] = useState(false);
   const [filter, setFilter] = useState("All Documents");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -194,6 +195,15 @@ function App() {
     return bills.filter(b => [b.product, b.seller, b.category, b.original_filename]
       .map(v => String(v || "").toLowerCase()).join(" ").includes(needle));
   }, [bills, query]);
+  // Google-style live suggestions under the search box, searched across
+  // the full vault (summaryBills), not just the currently listed page.
+  const searchMatches = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    const pool = summaryBills.length ? summaryBills : bills;
+    return pool.filter(b => [b.product, b.seller, b.category, b.original_filename, b.invoice_no, b.order_no]
+      .map(v => String(v || "").toLowerCase()).join(" ").includes(needle)).slice(0, 6);
+  }, [summaryBills, bills, query]);
   const pageTitle = activeNav === "Home" ? `Good evening, ${firstName}` : activeNav;
   const pageSubtitle = activeNav === "Home" ? "Every purchase, safely kept in one place." :
     activeNav === "My Bills" ? "Find and manage all your purchase receipts." :
@@ -224,8 +234,21 @@ function App() {
 
       <main className="main-area">
         <header className="topbar">
-          <div className="searchbox"><Search size={19} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search bills, products or brands..." />
-            {query && <button aria-label="Clear search" onClick={() => setQuery("")}><X size={16} /></button>}
+          <div className="search-wrap">
+            <div className="searchbox"><Search size={19} /><input value={query} onChange={e => setQuery(e.target.value)} onFocus={() => setSearchFocus(true)} onBlur={() => setTimeout(() => setSearchFocus(false), 150)} onKeyDown={e => { if (e.key === "Escape") setSearchFocus(false); }} placeholder="Search bills, products or brands..." />
+              {query && <button aria-label="Clear search" onClick={() => setQuery("")}><X size={16} /></button>}
+            </div>
+            {searchFocus && query.trim() && (
+              <div className="search-results">
+                {searchMatches.length ? searchMatches.map(bill => (
+                  <button key={bill.id} className="search-result" onMouseDown={e => { e.preventDefault(); setSelectedBill(bill); setQuery(""); setSearchFocus(false); }}>
+                    <span className="sr-thumb"><FileText size={16} /></span>
+                    <span className="sr-main"><b>{bill.product || bill.original_filename || "Untitled bill"}</b><small>{bill.seller || bill.category || "Purchase"} · {formatDate(bill.purchase_date)}</small></span>
+                    <span className="sr-amount">{money(bill.amount)}</span>
+                  </button>
+                )) : <div className="search-none">No bills match “{query.trim()}”</div>}
+              </div>
+            )}
           </div>
           <div className="top-actions">
             <button className="icon-button" title="Warranty reminders" onClick={() => navigate("Reminders")}><Bell size={20} />{remindersEnabled && counts.soon > 0 && <i />}</button>
