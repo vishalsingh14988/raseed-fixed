@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Bell, Check, ChevronDown, ClipboardList, FileText, Home, Search,
   ShieldCheck, Settings, Upload, Camera, X, Clock3, Trash2, ExternalLink,
-  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2
+  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn
 } from "lucide-react";
 import "./styles.css";
 
@@ -45,6 +45,14 @@ function App() {
   const [remindersEnabled, setRemindersEnabled] = useState(true);
   const [gmailError, setGmailError] = useState("");
   const [summaryBills, setSummaryBills] = useState([]);
+  const [auth, setAuth] = useState(null); // null = still checking sign-in
+  const [profileForm, setProfileForm] = useState({ name: "", purpose: "Personal bills", age: "" });
+  const [profileError, setProfileError] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const guest = !!auth && auth.auth_configured && !auth.connected;
+  const guestRef = React.useRef(false);
+  guestRef.current = guest;
+  const firstName = auth?.profile?.name ? auth.profile.name.split(" ")[0] : guest ? "Guest" : "Urvi";
 
   async function loadBills() {
     setLoading(true);
@@ -53,6 +61,7 @@ function App() {
       const res = await apiFetch(`/api/bills?${params}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not load bills.");
+      if (guestRef.current) { setBills([]); setSummaryBills([]); setError(""); return; }
       setBills(Array.isArray(data) ? data : []);
       setError("");
       // Unfiltered list for the dashboard summary — counts must not change
@@ -76,9 +85,52 @@ function App() {
   }, []);
 
   useEffect(() => {
+    // Who is signed in? Drives the login gate and the first-time questions.
+    apiFetch("/api/auth/me")
+      .then(r => r.json())
+      .then(d => {
+        setAuth(d);
+        if (d?.profile?.name) setProfileForm(f => ({ ...f, name: d.profile.name }));
+      })
+      .catch(() => setAuth({ connected: false, auth_configured: false, profile: null, profile_complete: false }));
+  }, []);
+
+  async function saveProfile(e) {
+    e.preventDefault();
+    setProfileError("");
+    if (!profileForm.name.trim()) { setProfileError("Please tell us your name."); return; }
+    const age = parseInt(profileForm.age, 10);
+    if (!age || age < 5 || age > 120) { setProfileError("Please enter your age."); return; }
+    setProfileSaving(true);
+    try {
+      const res = await apiFetch("/api/auth/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: profileForm.name.trim(), purpose: profileForm.purpose, age }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not save your details.");
+      setAuth(data);
+      loadBills();
+    } catch (err) {
+      setProfileError(err.message);
+    } finally { setProfileSaving(false); }
+  }
+
+  async function logout() {
+    try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { /* reload anyway */ }
+    window.location.reload();
+  }
+
+  useEffect(() => {
     const timer = setTimeout(loadBills, 200);
     return () => clearTimeout(timer);
   }, [query, filter]);
+
+  useEffect(() => {
+    // Signed-out visitors see an empty vault — bills belong to an account.
+    if (guest) { setBills([]); setSummaryBills([]); setLoading(false); }
+  }, [guest]);
 
   function navigate(label) {
     setActiveNav(label);
@@ -142,7 +194,7 @@ function App() {
     return bills.filter(b => [b.product, b.seller, b.category, b.original_filename]
       .map(v => String(v || "").toLowerCase()).join(" ").includes(needle));
   }, [bills, query]);
-  const pageTitle = activeNav === "Home" ? "Good evening, Urvi" : activeNav;
+  const pageTitle = activeNav === "Home" ? `Good evening, ${firstName}` : activeNav;
   const pageSubtitle = activeNav === "Home" ? "Every purchase, safely kept in one place." :
     activeNav === "My Bills" ? "Find and manage all your purchase receipts." :
     activeNav === "Warranty Tracker" ? "Know what is covered and what needs attention." :
@@ -177,13 +229,17 @@ function App() {
           </div>
           <div className="top-actions">
             <button className="icon-button" title="Warranty reminders" onClick={() => navigate("Reminders")}><Bell size={20} />{remindersEnabled && counts.soon > 0 && <i />}</button>
-            <button className="user-chip" onClick={() => navigate("Settings")}><span className="avatar">U</span><span>Hi, Urvi</span><ChevronDown size={15} /></button>
+            {guest
+              ? <a className="user-chip" href={`${API}/api/auth/google`}><span className="avatar"><LogIn size={15} /></span><span>Login</span></a>
+              : <button className="user-chip" onClick={() => navigate("Settings")}><span className="avatar">{firstName.charAt(0).toUpperCase()}</span><span>Hi, {firstName}</span><ChevronDown size={15} /></button>}
           </div>
         </header>
 
         <section className="welcome">
-          <div><div className="eyebrow">NAMASTE, URVI</div><h1>{pageTitle} <Heart className="heart" size={26} /></h1><p>{pageSubtitle}</p></div>
-          <button className="primary-button" onClick={() => setUploadOpen(true)}><Camera size={18} /> Scan / Upload Bill</button>
+          <div><div className="eyebrow">NAMASTE, {firstName.toUpperCase()}</div><h1>{pageTitle} <Heart className="heart" size={26} /></h1><p>{pageSubtitle}</p></div>
+          {activeNav === "Home" && (guest
+            ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={18} /> Login</a>
+            : <button className="primary-button" onClick={() => setUploadOpen(true)}><Camera size={18} /> Scan / Upload Bill</button>)}
         </section>
 
         {notice && <div className="notice"><Check size={17} /><span>{notice}</span><button onClick={() => setNotice("")}><X size={16} /></button></div>}
@@ -215,6 +271,9 @@ function App() {
             <div className="setting-row"><div className="setting-symbol"><Bell size={19} /></div><div className="setting-copy"><b>Warranty reminders</b><span>Show bills whose warranty is expiring soon.</span></div><button className={`toggle ${remindersEnabled ? "on" : ""}`} onClick={() => { setRemindersEnabled(v => !v); setNotice(`Warranty reminders ${remindersEnabled ? "paused" : "enabled"}.`); }} aria-label="Toggle reminders"><span /></button></div>
             <div className="setting-row"><div className="setting-symbol"><Moon size={19} /></div><div className="setting-copy"><b>Appearance</b><span>Switch between light and dark themes.</span></div><button className="soft-button" onClick={() => setDark(v => !v)}>{dark ? <Sun size={16} /> : <Moon size={16} />}{dark ? "Light mode" : "Dark mode"}</button></div>
             <div className="setting-row"><div className="setting-symbol"><ShieldCheck size={19} /></div><div className="setting-copy"><b>File storage</b><span>Uploads are sent to your backend; Cloudinary credentials stay server-side.</span></div></div>
+            {auth?.connected && (
+              <div className="setting-row"><div className="setting-symbol"><UserRound size={19} /></div><div className="setting-copy"><b>{auth.profile?.name || "Your account"}</b><span>{auth.email}{auth.profile?.purpose ? ` · ${auth.profile.purpose}` : ""}{auth.profile?.age ? ` · Age ${auth.profile.age}` : ""}</span></div><button className="soft-button" onClick={logout}><LogOut size={16} /> Log out</button></div>
+            )}
           </section>
         )}
 
@@ -228,7 +287,7 @@ function App() {
               <button className="sort-button" onClick={loadBills}><RefreshCw size={15} /> Refresh</button>
             </div>
             {loading ? <div className="empty-state"><RefreshCw className="spin" size={24} /><b>Loading your bills…</b></div> :
-              visibleBills.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>{query ? "No matching bills" : filter !== "All Documents" ? "No bills in this view" : "No bills here yet"}</b><span>{query ? "Try a different search." : filter !== "All Documents" ? `You have ${counts.all} bill${counts.all === 1 ? "" : "s"} saved, but none match “${filter}” right now.` : "Upload your first receipt and it will appear here."}</span>{filter !== "All Documents" || query ? <button className="primary-button" onClick={() => { setFilter("All Documents"); setQuery(""); }}>Show all documents</button> : <button className="primary-button" onClick={() => setUploadOpen(true)}><Plus size={17} /> Add a bill</button>}</div> :
+              visibleBills.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>{guest ? "Login to see your bills" : query ? "No matching bills" : filter !== "All Documents" ? "No bills in this view" : "No bills here yet"}</b><span>{guest ? "Your vault is personal — your bills appear here only after you login." : query ? "Try a different search." : filter !== "All Documents" ? `You have ${counts.all} bill${counts.all === 1 ? "" : "s"} saved, but none match “${filter}” right now.` : "Upload your first receipt and it will appear here."}</span>{guest ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={17} /> Login with Google</a> : filter !== "All Documents" || query ? <button className="primary-button" onClick={() => { setFilter("All Documents"); setQuery(""); }}>Show all documents</button> : <button className="primary-button" onClick={() => setUploadOpen(true)}><Plus size={17} /> Add a bill</button>}</div> :
               <div className="bill-list">
                 {visibleBills.map(bill => <button className="bill-row" key={bill.id} onClick={() => setSelectedBill(bill)}>
                   <span className="receipt-thumb"><FileText size={22} /><small>₹</small></span>
@@ -245,6 +304,35 @@ function App() {
         <footer className="page-footer">रसीद <span>•</span> HAR BILL SAMBHAAL KE</footer>
       </main>
 
+      {auth?.connected && !auth.profile_complete && (
+        <div className="modal-backdrop">
+          <div className="modal auth-modal">
+            <div className="brand auth-brand"><span className="brand-mark"><ClipboardList size={25} strokeWidth={2.1} /></span><span className="brand-name">रसीद</span></div>
+            <h2 className="auth-heading">Welcome to Raseed</h2>
+            <p className="auth-copy">First time here? Three quick questions and your vault is ready.</p>
+            <form onSubmit={saveProfile} className="auth-form">
+              <label className="field"><span>Your name</span>
+                <input value={profileForm.name} onChange={e => setProfileForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Urvi Garg" autoFocus />
+              </label>
+              <label className="field"><span>What will you use Raseed for?</span>
+                <select value={profileForm.purpose} onChange={e => setProfileForm(f => ({ ...f, purpose: e.target.value }))}>
+                  <option>Personal bills</option>
+                  <option>Family bills</option>
+                  <option>Business / shop bills</option>
+                  <option>Tracking warranties</option>
+                  <option>A bit of everything</option>
+                </select>
+              </label>
+              <label className="field"><span>Your age</span>
+                <input type="number" min="5" max="120" value={profileForm.age} onChange={e => setProfileForm(f => ({ ...f, age: e.target.value }))} placeholder="e.g. 21" />
+              </label>
+              {profileError && <div className="error-box">{profileError}</div>}
+              <button className="primary-button auth-submit" type="submit" disabled={profileSaving}>{profileSaving ? "Saving…" : "Start using Raseed"}</button>
+            </form>
+            <button className="auth-link" onClick={logout}>Sign in with a different account</button>
+          </div>
+        </div>
+      )}
       {uploadOpen && <UploadModal onClose={() => setUploadOpen(false)} onUpload={uploadFile} />}
       {selectedBill && <BillModal bill={selectedBill} onClose={() => setSelectedBill(null)} onDelete={removeBill} onSave={updateBill} />}
     </div>

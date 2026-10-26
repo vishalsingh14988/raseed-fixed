@@ -22,7 +22,6 @@
 .settings-panel{max-width:850px}.setting-row{display:flex;align-items:center;gap:14px;padding:18px 0;border-bottom:1px solid #edf0e9}.setting-row:last-child{border-bottom:0}.setting-symbol{width:40px;height:40px;border-radius:12px;background:#edf5e9;color:#4f8056;display:grid;place-items:center}.setting-copy{flex:1;display:flex;flex-direction:column;gap:5px}.setting-copy b{font-size:13px}.setting-copy span{font-size:11px;color:#869488;line-height:1.5}.toggle{width:42px;height:24px;border:0;border-radius:30px;background:#cbd3c8;padding:3px}.toggle span{display:block;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s}.toggle.on{background:#579266}.toggle.on span{transform:translateX(18px)}
 .page-footer{text-align:center;color:#9ba89b;font-size:9px;letter-spacing:2px;padding:30px 0 20px}.page-footer span{color:#78a47b;padding:0 8px}
 .modal-backdrop{position:fixed;inset:0;background:#1c3028a6;backdrop-filter:blur(4px);z-index:20;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto}.modal{width:min(650px,100%);max-height:calc(100vh - 40px);overflow-y:auto;background:#fffefa;border:1px solid #e4ebe0;border-radius:20px;padding:25px;box-shadow:0 24px 90px #12251c30}.detail-modal{width:min(600px,100%)}.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:20px}.modal-head h2{font:700 22px 'Libre Baskerville',serif;color:#294635;margin:7px 0}.modal-head p{font-size:12px;color:#879487;margin:0;line-height:1.6}.dropzone{border:1px dashed #a9cba9;border-radius:15px;background:#f6fbf3;min-height:135px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#456e4b;cursor:pointer;margin-bottom:16px}.dropzone:hover{background:#eef7ea;border-color:#79ad7e}.dropzone input{display:none}.upload-circle{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#e3f0df;color:#4e8956}.dropzone b{font-size:13px;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dropzone small{font-size:11px;color:#899a8a}.file-selected{display:flex;align-items:center;gap:7px;font-size:11px;color:#3d8050;margin:-5px 0 14px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid label{display:flex;flex-direction:column;gap:7px;color:#637568;font-size:11px;font-weight:700}.form-grid input,.form-grid select{width:100%;height:41px;border:1px solid #dfe8dc;border-radius:9px;background:#fff;padding:0 10px;color:#2f4c38;outline-color:#8dbb91;font-size:12px}.ocr-note{display:flex;align-items:flex-start;gap:7px;color:#819182;font-size:10px;line-height:1.6;margin:15px 0 0}.ocr-note svg{flex-shrink:0}.modal-foot{display:flex;align-items:center;gap:10px;margin-top:22px;padding-top:17px;border-top:1px solid #edf0e9}.modal-foot .primary-button{margin-left:auto}.modal-spacer{flex:1}.danger-button{display:inline-flex;align-items:center;gap:7px;color:#ad5048;border:1px solid #f0d8d4;background:#fff8f6;border-radius:9px;padding:10px 12px;font-size:12px}.danger-button:hover{background:#fdebe7}.detail-status{display:flex;align-items:center;gap:12px;color:#849286;font-size:11px;margin:5px 0 18px}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#e7ede4;border:1px solid #e7ede4;border-radius:12px;overflow:hidden}.detail-grid>div{background:#fbfcf8;padding:15px}.detail-grid small{display:block;color:#89978a;font-size:9px;letter-spacing:.7px;margin-bottom:8px}.detail-grid b{font:700 13px 'DM Sans',sans-serif;color:#34503c}.file-link{display:inline-flex;align-items:center;gap:8px;color:#39764a;text-decoration:none;font-size:12px;margin-top:17px}.file-link:hover{text-decoration:underline}.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
-.dark{--ink:#e4eee4;--muted:#a6b7a8;--line:#314638;--paper:#1d2d23;--cream:#17241b;background:#17241b;color:#e4eee4}.dark .sidebar,.dark .main-area{background:#17241b}.dark .brand-name,.dark .welcome h1,.dark .panel-heading h2,.dark .modal-head h2{color:#e3f0e3}.dark .searchbox,.dark .intro-card,.dark .gmail-card,.dark .panel{background:#1d2d23;border-color:#314638}.dark .searchbox input,.dark .bill-row,.dark .setting-copy b{color:#e4eee4}.dark .bill-row:hover,.dark .nav-item:hover,.dark .nav-item.selected{background:#263b2b}.dark .bill-row,.dark .list-toolbar,.dark .intro-foot,.dark .gmail-foot,.dark .setting-row{border-color:#314638}.dark .modal{background:#1d2d23;border-color:#314638}.dark .form-grid input,.dark .form-grid select{background:#17241b;color:#e4eee4;border-color:#405a45}.dark .detail-grid{background:#314638;border-color:#314638}.dark .detail-grid>div{background:#223429}.dark .soft-button,.dark .secondary-button{background:#263b2b;color:#d7ead8;border-color:#405a45}.dark .user-chip{color:#d5e4d5}
 @media(max-width:1100px){.sidebar{width:220px;flex-basis:220px}.bill-row{grid-template-columns:48px minmax(130px,1fr) minmax(80px,.6fr) minmax(90px,.7fr) auto 15px;gap:10px}.welcome{margin-top:42px}.warranty-summary{justify-content:flex-end}}
 @media(max-width:800px){.sidebar{width:68px;flex-basis:68px;padding:18px 8px}.brand{padding:0 5px 5px}.brand-name,.brand-caption,.nav-item span,.sidebar-note,.sidebar-bottom{display:none}.brand-mark{width:44px}.side-nav{margin-top:28px}.nav-item{justify-content:center;padding:14px 8px}.nav-item.selected:before{display:none}.main-area{padding:16px 14px 0}.welcome{align-items:flex-start;flex-direction:column;margin:34px 0 24px;gap:18px}.welcome h1{font-size:27px}.welcome p{line-height:1.6}.topbar{gap:8px}.top-actions{gap:5px}.user-chip>span:not(.avatar),.user-chip>svg{display:none}.searchbox{padding:0 10px}.searchbox input{font-size:12px}.intro-card{grid-template-columns:44px 1fr;padding:18px 16px 0;gap:12px}.intro-icon{width:42px;height:42px}.intro-card .soft-button{grid-column:2;justify-self:start}.gmail-top>.primary-button,.panel{padding:18px 14px}.panel-heading{flex-direction:column}.panel-heading h2{font-size:19px}.warranty-summary{justify-content:flex-start}.list-toolbar{align-items:flex-start;flex-direction:column;padding-bottom:8px}.filter-tabs{width:100%;gap:14px}.filter-tabs button{font-size:11px;padding:12px 0 10px}.sort-button{align-self:flex-end}.bill-row{grid-template-columns:46px minmax(0,1fr) 18px;gap:9px;padding:14px 2px}.receipt-thumb{width:42px;height:49px;grid-row:1/3}.bill-main{grid-column:2;grid-row:1}.bill-meta{grid-column:2;grid-row:2;display:flex;flex-direction:row;align-items:center;gap:8px}.bill-meta small{display:none}.bill-meta b{font-size:11px}.warranty-info{display:none}.bill-row>.status{grid-column:2;grid-row:3;justify-self:start}.row-arrow{grid-column:3;grid-row:1;transform:rotate(-90deg)}.form-grid{grid-template-columns:1fr}.modal{padding:19px}.modal-foot{flex-wrap:wrap}.setting-row{gap:10px}.setting-symbol{width:35px;height:35px;flex-shrink:0}.setting-copy span{line-height:1.4}.warranty-summary>div{font-size:10px;padding:7px}.page-footer{letter-spacing:1px}}
 @media(max-width:430px){.sidebar{width:58px;flex-basis:58px;padding-left:5px;padding-right:5px}.brand-mark{width:42px;height:42px}.main-area{padding-left:10px;padding-right:10px}.welcome h1{font-size:23px}.welcome .primary-button{width:100%}.gmail-top>.primary-button{margin-left:0}.filter-tabs{gap:10px}.filter-tabs button{font-size:10px}.modal-backdrop{padding:8px}.modal{max-height:calc(100vh - 16px);padding:16px}.warranty-summary{gap:6px}.warranty-summary>div{gap:5px}}
@@ -484,5 +483,142 @@ select:focus-visible {
 .summary-card small{display:block;font-size:10px;letter-spacing:.12em;color:#819084;font-weight:700}
 .summary-card b{display:block;font-size:24px;margin:8px 0 4px;color:inherit}
 .summary-card span{font-size:11px;color:#879588;line-height:1.5;display:block}
-.dark .summary-card{background:#1d2d23;border-color:#314638}
 @media(max-width:800px){.summary-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* =========================================
+   DARK MODE — midnight + purple, done properly.
+   The old dark rules used the retired green palette and only covered
+   a few components, leaving white cards on a dark shell. These rules
+   restyle every surface in the same midnight family as the sidebar.
+   ========================================= */
+.app-shell.dark {
+  color-scheme: dark;
+  --ink: #E7EAF6;
+  --muted: #94A3C0;
+  --line: #262F4D;
+  --paper: #151B31;
+  --cream: #0B1020;
+  background: #0B1020;
+  color: #E7EAF6;
+}
+.app-shell.dark .main-area { background: #0D1226; }
+.app-shell.dark .welcome h1 { color: #F2F4FF; }
+.app-shell.dark .welcome p { color: #94A3C0; }
+.app-shell.dark .eyebrow { color: #A78BFA; }
+
+/* Top bar */
+.app-shell.dark .searchbox { background: #151B31; border-color: #262F4D; color: #94A3C0; }
+.app-shell.dark .searchbox input { color: #E7EAF6; }
+.app-shell.dark .searchbox input::placeholder { color: #5D6B8C; }
+.app-shell.dark .icon-button { color: #A78BFA; }
+.app-shell.dark .icon-button:hover,
+.app-shell.dark .user-chip:hover { background: #221D4D; }
+.app-shell.dark .user-chip { color: #DDE3F5; }
+.app-shell.dark .avatar { background: #2A2360; color: #C4B5FD; }
+
+/* Buttons */
+.app-shell.dark .secondary-button,
+.app-shell.dark .soft-button { background: #221D4D; color: #C4B5FD; border-color: #3B2F7A; }
+.app-shell.dark .secondary-button:hover,
+.app-shell.dark .soft-button:hover { background: #2A2360; border-color: #6C5CE7; }
+.app-shell.dark .text-button { color: #94A3C0; }
+.app-shell.dark .danger-button { background: #3A1420; color: #FCA5A5; border-color: #7F1D2D; }
+
+/* Cards and panels */
+.app-shell.dark .intro-card,
+.app-shell.dark .gmail-card,
+.app-shell.dark .panel { background: #151B31; border-color: #262F4D; box-shadow: 0 10px 30px #00000040; }
+.app-shell.dark .intro-icon { background: #221D4D; color: #A78BFA; }
+.app-shell.dark .intro-copy h2,
+.app-shell.dark .gmail-copy h2 { color: #F2F4FF; }
+.app-shell.dark .intro-copy p,
+.app-shell.dark .gmail-copy p,
+.app-shell.dark .intro-foot { color: #94A3C0; }
+.app-shell.dark .intro-foot { border-color: #262F4D; }
+.app-shell.dark .panel-heading h2 { color: #F2F4FF; }
+.app-shell.dark .panel-heading p { color: #94A3C0; }
+.app-shell.dark .summary-card { background: #151B31; border-color: #262F4D; box-shadow: 0 8px 24px #00000035; }
+.app-shell.dark .summary-card small { color: #8494B8; }
+.app-shell.dark .summary-card b { color: #F2F4FF; }
+.app-shell.dark .summary-card span { color: #8494B8; }
+
+/* Bill list */
+.app-shell.dark .list-toolbar { border-color: #262F4D; }
+.app-shell.dark .filter-tabs button { color: #94A3C0; }
+.app-shell.dark .filter-tabs button:hover,
+.app-shell.dark .filter-tabs button.active { color: #A78BFA; border-bottom-color: #A78BFA; }
+.app-shell.dark .sort-button { background: #151B31; border-color: #262F4D; color: #B9C2DC; }
+.app-shell.dark .bill-row { color: #E7EAF6; border-color: #232B47; }
+.app-shell.dark .bill-row:hover { background: #1A2140; }
+.app-shell.dark .bill-main b { color: #F2F4FF; }
+.app-shell.dark .bill-main small,
+.app-shell.dark .bill-meta small { color: #8494B8; }
+.app-shell.dark .bill-meta b { color: #C9D2EC; }
+.app-shell.dark .receipt-thumb { background: #221D4D; border-color: #3B2F7A; color: #A78BFA; }
+.app-shell.dark .row-arrow { color: #8494B8; }
+
+/* Status chips: same meanings, dark tints instead of pastel glare */
+.app-shell.dark .status.active { background: #0E2E1E; color: #4ADE80; }
+.app-shell.dark .status.soon { background: #33270A; color: #FBBF24; }
+.app-shell.dark .status.expired { background: #3A1420; color: #F87171; }
+.app-shell.dark .status.none { background: #1E293B; color: #94A3B8; }
+.app-shell.dark .warranty-summary > div { border-color: #262F4D; }
+.app-shell.dark .warranty-summary b { color: #F2F4FF; }
+
+/* Empty state */
+.app-shell.dark .empty-state { color: #94A3C0; }
+.app-shell.dark .empty-state b { color: #F2F4FF; }
+.app-shell.dark .empty-icon { background: #221D4D; color: #A78BFA; }
+
+/* Settings */
+.app-shell.dark .setting-row { border-color: #262F4D; }
+.app-shell.dark .setting-symbol { background: #221D4D; color: #A78BFA; }
+.app-shell.dark .setting-copy b { color: #F2F4FF; }
+.app-shell.dark .setting-copy span { color: #94A3C0; }
+.app-shell.dark .toggle { background: #2C3757; }
+
+/* Modals (upload + bill details + edit) */
+.app-shell.dark .modal { background: #151B31; border-color: #262F4D; }
+.app-shell.dark .modal-head h2 { color: #F2F4FF; }
+.app-shell.dark .modal-head p { color: #94A3C0; }
+.app-shell.dark .dropzone { background: #171233; border-color: #4C3BCF; color: #C4B5FD; }
+.app-shell.dark .dropzone:hover { background: #1E1850; border-color: #6C5CE7; }
+.app-shell.dark .upload-circle { background: #2A2360; color: #A78BFA; }
+.app-shell.dark .form-grid label { color: #A8B2CC; }
+.app-shell.dark .form-grid input,
+.app-shell.dark .form-grid select { background: #11172C; border-color: #2C3757; color: #E7EAF6; }
+.app-shell.dark .ocr-note { color: #94A3C0; }
+.app-shell.dark .modal-foot { border-color: #262F4D; }
+.app-shell.dark .detail-status { color: #94A3C0; }
+.app-shell.dark .detail-grid { background: #262F4D; border-color: #262F4D; }
+.app-shell.dark .detail-grid > div { background: #1B2340; }
+.app-shell.dark .detail-grid small { color: #8494B8; }
+.app-shell.dark .detail-grid b { color: #F2F4FF; }
+.app-shell.dark .file-link { color: #A78BFA; }
+
+/* Banners and footer */
+.app-shell.dark .notice { background: #0E2E1E; border-color: #14532D; color: #4ADE80; }
+.app-shell.dark .alert-error,
+.app-shell.dark .inline-error { background: #3A1420; border-color: #7F1D2D; color: #FCA5A5; }
+.app-shell.dark .page-footer { color: #8494B8; }
+.app-shell.dark .alert-error button { background: #2A0E18; color: #FCA5A5; border: 1px solid #7F1D2D; border-radius: 8px; padding: 4px 10px; }
+.app-shell.dark .notice button { color: #4ADE80; }
+
+/* ---- Sign-in gate & first-time questions ------------------------------- */
+.auth-brand { justify-content: center; padding: 0; }
+.auth-heading { font-family: 'Libre Baskerville', serif; font-weight: 700; font-size: 27px; line-height: 1.3; letter-spacing: -.4px; margin: 20px 0 10px; text-align: center; }
+.auth-copy { color: #64748B; font-size: 14px; line-height: 1.65; text-align: center; margin: 0 0 20px; }
+.auth-form { display: grid; gap: 14px; margin-top: 4px; }
+.auth-form .field { display: grid; gap: 6px; }
+.auth-form .field span { font-size: 12px; font-weight: 700; letter-spacing: .4px; color: #33405E; }
+.auth-form .field input, .auth-form .field select { width: 100%; box-sizing: border-box; padding: 12px 13px; border-radius: 10px; border: 1px solid #D8DEE9; background: #F8FAFF; color: #0B1020; font: 500 14px 'DM Sans', sans-serif; }
+.auth-form .field input:focus, .auth-form .field select:focus { outline: 2px solid #A78BFA; outline-offset: 0; border-color: #A78BFA; background: #FFFFFF; }
+.auth-submit { width: 100%; justify-content: center; margin-top: 4px; }
+.auth-link { display: block; margin: 16px auto 0; background: none; border: 0; color: #64748B; font: 500 13px 'DM Sans', sans-serif; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+
+a.primary-button { text-decoration: none; }
+a.user-chip { text-decoration: none; }
+.auth-modal { max-width: 440px; }
+.auth-modal .brand-name { color: #0B1020; }
+.app-shell.dark .auth-modal .brand-name { color: #F2F4FF; }
+.auth-modal .auth-heading { margin-top: 14px; }
