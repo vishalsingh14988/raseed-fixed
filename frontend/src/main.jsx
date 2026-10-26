@@ -32,6 +32,28 @@ function captureLoginToken() {
   }
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
 }
+// The last confirmed sign-in answer is also remembered, so a returning
+// visitor sees their own greeting instantly on reload instead of a
+// "checking" state flipping into place a second later. The fresh check
+// still runs on every load and overwrites this if anything changed.
+const AUTH_CACHE_KEY = "raseed_auth_cache";
+function readAuthCache() {
+  try {
+    const raw = localStorage.getItem(AUTH_CACHE_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    return d && typeof d === "object" && "connected" in d ? d : null;
+  } catch { return null; }
+}
+function writeAuthCache(d) {
+  try {
+    if (d) localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify({
+      connected: !!d.connected, auth_configured: !!d.auth_configured,
+      email: d.email || null, profile: d.profile || null,
+      profile_complete: !!d.profile_complete,
+    }));
+  } catch { /* ignore */ }
+}
 async function apiFetch(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   const token = storedToken();
@@ -67,7 +89,7 @@ function App() {
   const [remindersEnabled, setRemindersEnabled] = useState(true);
   const [gmailError, setGmailError] = useState("");
   const [summaryBills, setSummaryBills] = useState([]);
-  const [auth, setAuth] = useState(null); // null = still checking sign-in
+  const [auth, setAuth] = useState(() => readAuthCache()); // null = first visit, still checking sign-in
   const [profileForm, setProfileForm] = useState({ name: "", purpose: "Personal bills", age: "" });
   const [profileError, setProfileError] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
@@ -121,8 +143,9 @@ function App() {
         // A saved token the server no longer accepts is cleared, so the
         // site settles into honest Guest mode instead of flip-flopping.
         if (!d?.connected && storedToken()) {
-          try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+          try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(AUTH_CACHE_KEY); } catch { /* ignore */ }
         }
+        writeAuthCache(d);
         setAuth(d);
         if (d?.profile?.name) setProfileForm(f => ({ ...f, name: d.profile.name }));
       } catch (err) {
@@ -152,6 +175,7 @@ function App() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not save your details.");
+      writeAuthCache(data);
       setAuth(data);
       loadBills();
     } catch (err) {
@@ -160,7 +184,7 @@ function App() {
   }
 
   async function logout() {
-    try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+    try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(AUTH_CACHE_KEY); } catch { /* ignore */ }
     try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { /* reload anyway */ }
     window.location.reload();
   }
@@ -246,7 +270,7 @@ function App() {
     return pool.filter(b => [b.product, b.seller, b.category, b.original_filename, b.invoice_no, b.order_no]
       .map(v => String(v || "").toLowerCase()).join(" ").includes(needle)).slice(0, 6);
   }, [summaryBills, bills, query]);
-  const pageTitle = activeNav === "Home" ? `Good evening, ${firstName}` : activeNav;
+  const pageTitle = activeNav === "Home" ? (auth ? `Good evening, ${firstName}` : "Good evening") : activeNav;
   const pageSubtitle = activeNav === "Home" ? "Every purchase, safely kept in one place." :
     activeNav === "My Bills" ? "Find and manage all your purchase receipts." :
     activeNav === "Warranty Tracker" ? "Know what is covered and what needs attention." :
@@ -294,15 +318,17 @@ function App() {
           </div>
           <div className="top-actions">
             <button className="icon-button" title="Warranty reminders" onClick={() => navigate("Reminders")}><Bell size={20} />{remindersEnabled && counts.soon > 0 && <i />}</button>
-            {guest
+            {auth === null
+              ? <span style={{ display: "inline-block", width: 118, height: 40 }} />
+              : guest
               ? <a className="user-chip" href={`${API}/api/auth/google`}><span className="avatar"><LogIn size={15} /></span><span>Login</span></a>
               : <button className="user-chip" onClick={() => navigate("Settings")}><span className="avatar">{firstName.charAt(0).toUpperCase()}</span><span>Hi, {firstName}</span><ChevronDown size={15} /></button>}
           </div>
         </header>
 
         <section className="welcome">
-          <div><div className="eyebrow">NAMASTE, {firstName.toUpperCase()}</div><h1>{pageTitle} <Heart className="heart" size={26} /></h1><p>{pageSubtitle}</p></div>
-          {activeNav === "Home" && (guest
+          <div><div className="eyebrow">NAMASTE{auth ? `, ${firstName.toUpperCase()}` : ""}</div><h1>{pageTitle} <Heart className="heart" size={26} /></h1><p>{pageSubtitle}</p></div>
+          {activeNav === "Home" && auth !== null && (guest
             ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={18} /> Login</a>
             : <button className="primary-button" onClick={() => setUploadOpen(true)}><Camera size={18} /> Scan / Upload Bill</button>)}
         </section>
