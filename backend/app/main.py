@@ -16,6 +16,12 @@ import tempfile
 
 import base64
 
+import hashlib
+
+import hmac
+
+import time
+
 from datetime import date, datetime
 
 from pathlib import Path
@@ -508,7 +514,81 @@ init_db()
 
 # --------------------------------------------------
 
+# Login tokens: the session cookie alone is not reliable on phones,
+# because the frontend and backend are different sites and many mobile
+# browsers block or drop cross-site cookies - the site then flips a
+# signed-in user back to Guest. After Google sign-in the browser is
+# handed a signed token, the website stores it and sends it back as an
+# Authorization header, which no cookie setting can block.
+
+def _token_secret() -> bytes:
+
+    return os.getenv(
+
+        "SESSION_SECRET",
+
+        "CHANGE_THIS_LOCAL_DEVELOPMENT_SECRET"
+
+    ).encode()
+
+
+def issue_login_token(email: str, days: int = 30) -> str:
+
+    payload = email + "|" + str(int(time.time()) + days * 86400)
+
+    sig = hmac.new(_token_secret(), payload.encode(), hashlib.sha256).hexdigest()
+
+    body = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+    return body + "." + sig
+
+
+def read_login_token(token: str):
+
+    try:
+
+        body, sig = token.split(".", 1)
+
+        payload = base64.urlsafe_b64decode(
+
+            body + "=" * (-len(body) % 4)
+
+        ).decode()
+
+        expected = hmac.new(
+
+            _token_secret(), payload.encode(), hashlib.sha256
+
+        ).hexdigest()
+
+        if not hmac.compare_digest(sig, expected):
+
+            return None
+
+        email, exp = payload.rsplit("|", 1)
+
+        if int(exp) < int(time.time()):
+
+            return None
+
+        return email
+
+    except Exception:
+
+        return None
+
+
 def current_owner(request: Request) -> str:
+
+    auth = request.headers.get("authorization") or ""
+
+    if auth.lower().startswith("bearer "):
+
+        email = read_login_token(auth[7:].strip())
+
+        if email:
+
+            return email
 
     return request.session.get("owner_email") or "local-demo"
 
@@ -1743,7 +1823,15 @@ async def google_callback(request: Request):
 
     request.session.pop("oauth_purpose", None)
 
-    return RedirectResponse(FRONTEND_ORIGIN)
+    # Hand the website a login token as well as the session cookie, so
+    # sign-in also sticks on phones whose browsers block the cross-site
+    # cookie. The token travels in the URL fragment, which is never sent
+    # to any server; the website stores it and removes it from the URL.
+    return RedirectResponse(
+
+        FRONTEND_ORIGIN + "/#raseed_token=" + issue_login_token(email)
+
+    )
 
 @app.get("/api/auth/me")
 
