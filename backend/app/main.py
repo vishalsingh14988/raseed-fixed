@@ -330,6 +330,8 @@ def init_db():
 
                 warranty_end TEXT DEFAULT '',
 
+                warranty_lifetime INTEGER DEFAULT 0,
+
                 category TEXT DEFAULT 'Other',
 
                 invoice_no TEXT DEFAULT '',
@@ -403,6 +405,16 @@ def init_db():
                 ALTER TABLE bills
 
                 ADD COLUMN order_no TEXT DEFAULT ''
+
+            """)
+
+        if "warranty_lifetime" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN warranty_lifetime INTEGER DEFAULT 0
 
             """)
 
@@ -699,13 +711,21 @@ def parse_invoice_date(value: str) -> str:
 
 
 def parse_warranty_months(text: str) -> int:
-    """Detect explicit warranty duration; avoid guessing if absent."""
+    """Detect explicit warranty duration; avoid guessing if absent.
+
+    Accepts the ways real bills actually write it: "1 Year Warranty",
+    "6-month warranty", "Warranty: 12M", "1yr warranty", "6 mos".
+    """
     patterns = (
-        (r"\b(\d{1,2})\s*[- ]?\s*years?\b.{0,50}\bwarranty\b", 12),
-        (r"\bwarranty\b.{0,50}\b(\d{1,2})\s*years?\b", 12),
-        (r"\b(\d{1,3})\s*months?\b.{0,50}\bwarranty\b", 1),
-        (r"\bwarranty\b.{0,50}\b(\d{1,3})\s*months?\b", 1),
-        (r"\bwarranty\s*[:\-]?\s*(\d{1,3})\s*(?:month|months)\b", 1),
+        (r"\b(\d{1,2})\s*[- ]?\s*(?:years?|yrs?)\b.{0,50}\bwarranty\b", 12),
+        (r"\bwarranty\b.{0,50}\b(\d{1,2})\s*[- ]?\s*(?:years?|yrs?)\b", 12),
+        (r"\b(\d{1,2})\s*y\b.{0,30}\bwarranty\b", 12),
+        (r"\bwarranty\b.{0,30}\b(\d{1,2})\s*y\b", 12),
+        (r"\b(\d{1,3})\s*[- ]?\s*(?:months?|mos?)\b.{0,50}\bwarranty\b", 1),
+        (r"\bwarranty\b.{0,50}\b(\d{1,3})\s*[- ]?\s*(?:months?|mos?)\b", 1),
+        (r"\bwarranty\s*[:\-]?\s*(\d{1,3})\s*(?:months?|mos?)\b", 1),
+        (r"\b(\d{1,3})\s*m\b.{0,30}\bwarranty\b", 1),
+        (r"\bwarranty\b.{0,30}\b(\d{1,3})\s*m\b", 1),
     )
     for pattern, multiplier in patterns:
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -719,14 +739,23 @@ def parse_warranty_months(text: str) -> int:
 def parse_warranty_end(text: str) -> str:
     """Detect an explicitly labelled warranty expiry/end date."""
     date_pattern = (
-        r"(?:warranty\s*)?(?:end|expiry|expiration|expires|valid until)"
-        r"\s*(?:date)?\s*[:\-]?\s*"
+        r"(?:warranty\s*)?(?:end|expiry|expiration|expires|valid\s*(?:until|till|upto))"
+        r"\s*(?:date|on)?\s*[:\-]?\s*"
         r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
         r"\d{1,2}\s+[A-Za-z]+\s+\d{4}|"
         r"[A-Za-z]+\s+\d{1,2},?\s+\d{4})"
     )
     match = re.search(date_pattern, text, re.IGNORECASE)
     return parse_invoice_date(match.group(1)) if match else ""
+
+
+def parse_warranty_lifetime(text: str) -> int:
+    """1 when the bill promises a lifetime warranty, else 0."""
+    return 1 if re.search(
+        r"life\s*[- ]?time\b.{0,30}\bwarranty\b|\bwarranty\b.{0,30}\blife\s*[- ]?time\b",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    ) else 0
 
 
 KNOWN_SELLERS = (
@@ -927,6 +956,7 @@ def parse_fields(text: str, filename: str):
         "amount": amount,
         "warranty_months": parse_warranty_months(text),
         "warranty_end": parse_warranty_end(text),
+        "warranty_lifetime": parse_warranty_lifetime(text),
         "invoice_no": references["invoice_no"],
         "order_no": references["order_no"],
     }
@@ -951,9 +981,23 @@ def add_months(original_date: date, months: int) -> date:
 
     return date(year, month, day)
 
-def warranty_status(end_text):
+def warranty_status(end_text, warranty_months=None, warranty_lifetime=0):
+
+    if warranty_lifetime:
+
+        return "Active"
 
     if not end_text:
+
+        # A known warranty duration whose end date could not be
+
+        # calculated (e.g. no purchase date was read) is still a
+
+        # warranty — it must not be reported as "No Warranty".
+
+        if warranty_months:
+
+            return "Active"
 
         return "No Warranty"
 
@@ -977,15 +1021,155 @@ def warranty_status(end_text):
 
     return "Active"
 
+# --------------------------------------------------
+# AI BILL READER (Gemini vision) — reads handwriting
+# --------------------------------------------------
+# Print OCR (Tesseract) cannot read pen handwriting, which is how many
+# Indian shop bills are written. When a Gemini API key is configured
+# (GEMINI_API_KEY or GOOGLE_API_KEY), photo uploads are also read by
+# Google's Gemini vision model, which reads printed AND handwritten
+# text. Everything is best-effort: with no key, or on any API failure,
+# the upload simply uses the normal OCR text exactly as before.
+
+AI_READER_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite")
+
+AI_READER_PROMPT = (
+    "You are reading a photo of an Indian purchase bill or invoice. "
+    "The bill may mix printed text and handwriting. Read it carefully and "
+    "reply with ONLY a JSON object (no markdown, no explanation) with keys: "
+    "\"text\": a full transcription of all readable text on the bill; "
+    "\"product\": the main product/item bought (brand + model), or \"\"; "
+    "\"seller\": the shop/store name, or \"\"; "
+    "\"purchase_date\": the bill date as YYYY-MM-DD, or \"\"; "
+    "\"amount\": the grand total amount payable as a plain number (no commas, no currency symbol), or null; "
+    "\"invoice_no\": the invoice/bill number, or \"\"; "
+    "\"order_no\": the order number/id, or \"\"; "
+    "\"warranty_months\": warranty duration in months as an integer (convert years to months; 0 if none stated); "
+    "\"warranty_end\": warranty end/expiry date as YYYY-MM-DD if written, else \"\"; "
+    "\"warranty_lifetime\": true if a lifetime warranty is stated, else false. "
+    "Never guess a value you cannot read; use \"\" or null instead."
+)
+
+
+def _gemini_api_key() -> str:
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+
+
+def _parse_ai_json(raw: str) -> dict:
+    """Tolerant JSON extraction from a model reply."""
+    if not raw:
+        return {}
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start == -1 or end <= start:
+        return {}
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_ai_fields(parsed: dict) -> dict:
+    """Validate/coerce the model's field values before they are trusted."""
+    fields = {}
+    for key in ("product", "seller", "invoice_no", "order_no"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            fields[key] = value.strip()[:200]
+    for key in ("purchase_date", "warranty_end"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            iso = parse_invoice_date(value.strip())
+            if iso:
+                fields[key] = iso
+    amount = parsed.get("amount")
+    try:
+        amount = float(str(amount).replace(",", "")) if amount is not None else None
+    except (TypeError, ValueError):
+        amount = None
+    if amount is not None and 0 < amount < 100000000:
+        fields["amount"] = amount
+    try:
+        months = int(parsed.get("warranty_months") or 0)
+    except (TypeError, ValueError):
+        months = 0
+    if 0 < months <= 120:
+        fields["warranty_months"] = months
+    if parsed.get("warranty_lifetime") in (True, 1, "true", "True", "yes"):
+        fields["warranty_lifetime"] = 1
+    return fields
+
+
+def ai_read_bill(data: bytes, content_type: str) -> dict:
+    """Read a bill photo with Gemini vision. Returns {"text", "fields"} or {}."""
+    api_key = _gemini_api_key()
+    if not api_key or not data:
+        return {}
+    base = os.getenv(
+        "GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"
+    ).rstrip("/")
+    models = []
+    for candidate in [os.getenv("GEMINI_MODEL", "")] + list(AI_READER_MODELS):
+        if candidate and candidate not in models:
+            models.append(candidate)
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": AI_READER_PROMPT},
+                {"inline_data": {
+                    "mime_type": content_type,
+                    "data": base64.b64encode(data).decode("ascii"),
+                }},
+            ]
+        }],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+    }
+    for model in models:
+        try:
+            # trust_env=False: ignore any proxy variables of the host —
+            # the Gemini API is always reached directly (e.g. on Render).
+            with httpx.Client(timeout=45.0, trust_env=False) as client:
+                response = client.post(
+                    f"{base}/models/{model}:generateContent",
+                    headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                    json=payload,
+                )
+            if response.status_code != 200:
+                continue
+            body = response.json()
+            parts = body["candidates"][0]["content"]["parts"]
+            raw = "".join(part.get("text", "") for part in parts)
+            parsed = _parse_ai_json(raw)
+            if not parsed:
+                continue
+            return {
+                "text": str(parsed.get("text") or ""),
+                "fields": _normalize_ai_fields(parsed),
+            }
+        except Exception:
+            continue
+    return {}
+
+
 def row_to_dict(row):
 
     result = dict(row)
 
     result["warranty_status"] = warranty_status(
 
-        result.get("warranty_end", "")
+        result.get("warranty_end", ""),
+
+        result.get("warranty_months"),
+
+        result.get("warranty_lifetime", 0),
 
     )
+
+    result.setdefault("warranty_lifetime", 0)
 
     # Bills saved before invoice/order numbers were captured can still
     # show them: re-read the numbers from the bill's own saved text.
@@ -1036,6 +1220,8 @@ class BillUpdate(BaseModel):
     invoice_no: Optional[str] = None
 
     order_no: Optional[str] = None
+
+    warranty_lifetime: Optional[int] = None
 
 # --------------------------------------------------
 
@@ -1718,7 +1904,7 @@ def scan_gmail(request: Request):
 
                                     product, seller, purchase_date, amount,
 
-                                    warranty_months, warranty_end, category,
+                                    warranty_months, warranty_end, warranty_lifetime, category,
 
                                     invoice_no, order_no,
 
@@ -1751,6 +1937,8 @@ def scan_gmail(request: Request):
                                     gmail_warranty_months or None,
 
                                     gmail_warranty_end,
+
+                                    fields.get("warranty_lifetime", 0),
 
                                     "Other",
 
@@ -1900,6 +2088,12 @@ def health():
 
         },
 
+        "ai_reader": {
+
+            "configured": bool(_gemini_api_key()),
+
+        },
+
     }
 
 # --------------------------------------------------
@@ -1991,6 +2185,16 @@ def list_bills(
             bill for bill in bills
 
             if bill["warranty_status"] == "No Warranty"
+
+        ]
+
+    elif status == "Expired":
+
+        bills = [
+
+            bill for bill in bills
+
+            if bill["warranty_status"] == "Expired"
 
         ]
 
@@ -2103,7 +2307,23 @@ async def upload_bill(
                   len(text.strip()), ")")
             text = client_text[:20000]
 
+        # AI reader: for photo uploads, a vision model reads the
+        # handwriting that print OCR misses. Its transcription becomes
+        # the bill text and its explicit fields win over regex guesses.
+        ai_fields = {}
+        if (file.content_type or "").startswith("image/"):
+            ai_result = ai_read_bill(data, file.content_type or "")
+            if ai_result:
+                ai_text = (ai_result.get("text") or "").strip()
+                if len(ai_text) >= 20:
+                    print("BILL EXTRACTION: using AI reader text,",
+                          len(ai_text), "characters")
+                    text = ai_text[:20000]
+                ai_fields = ai_result.get("fields") or {}
+
         fields = parse_fields(text, filename)
+        for ai_key, ai_value in ai_fields.items():
+            fields[ai_key] = ai_value
 
         print(
             "BILL EXTRACTION DEBUG:",
@@ -2191,7 +2411,7 @@ async def upload_bill(
 
                     product, seller, purchase_date, amount,
 
-                    warranty_months, warranty_end, category,
+                    warranty_months, warranty_end, warranty_lifetime, category,
 
                     invoice_no, order_no,
 
@@ -2201,7 +2421,7 @@ async def upload_bill(
 
                 )
 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                 """,
 
@@ -2218,6 +2438,8 @@ async def upload_bill(
                     warranty_months or None,
 
                     warranty_end,
+
+                    fields.get("warranty_lifetime", 0),
 
                     category,
 
@@ -2369,7 +2591,7 @@ def update_bill(
 
                 warranty_months=?, warranty_end=?, category=?,
 
-                invoice_no=?, order_no=?
+                invoice_no=?, order_no=?, warranty_lifetime=?
 
             WHERE id=?
 
@@ -2394,6 +2616,8 @@ def update_bill(
                 values.get("invoice_no") or "",
 
                 values.get("order_no") or "",
+
+                values.get("warranty_lifetime") or 0,
 
                 bill_id,
 
