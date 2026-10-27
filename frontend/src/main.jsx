@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Bell, Check, ChevronDown, ClipboardList, FileText, Home, Search,
   ShieldCheck, Settings, Upload, Camera, X, Clock3, Trash2, ExternalLink,
-  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn
+  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn, Mail
 } from "lucide-react";
 import "./styles.css";
 
@@ -88,6 +88,9 @@ function App() {
   const [dark, setDark] = useState(false);
   const [remindersEnabled, setRemindersEnabled] = useState(true);
   const [gmailError, setGmailError] = useState("");
+  const [gmailStatus, setGmailStatus] = useState(null); // null = not checked yet
+  const [gmailImporting, setGmailImporting] = useState(false);
+  const [gmailResult, setGmailResult] = useState("");
   const [summaryBills, setSummaryBills] = useState([]);
   const [auth, setAuth] = useState(() => readAuthCache()); // null = first visit, still checking sign-in
   const [profileForm, setProfileForm] = useState({ name: "", purpose: "Personal bills", age: "" });
@@ -130,6 +133,21 @@ function App() {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
+
+  useEffect(() => {
+    // Is Gmail connected for bill importing? Checked whenever the
+    // signed-in user changes; drives the Connect / Import card below.
+    if (!auth?.connected) { setGmailStatus(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiFetch("/api/gmail/status");
+        const d = await r.json();
+        if (!cancelled && r.ok) setGmailStatus(d);
+      } catch { /* leave as unknown; the card still offers Connect */ }
+    })();
+    return () => { cancelled = true; };
+  }, [auth?.connected]);
 
   useEffect(() => {
     // Who is signed in? Drives the login gate and the first-time questions.
@@ -187,6 +205,24 @@ function App() {
     try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(AUTH_CACHE_KEY); } catch { /* ignore */ }
     try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { /* reload anyway */ }
     window.location.reload();
+  }
+
+  async function importFromGmail() {
+    setGmailImporting(true); setGmailResult("");
+    try {
+      const res = await apiFetch("/api/gmail/scan", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        setGmailStatus({ connected: false, email: null });
+        setGmailResult("Your Gmail connection needs to be renewed — please connect Gmail again.");
+        return;
+      }
+      if (!res.ok) throw new Error(data.detail || "Gmail import failed.");
+      setGmailResult(`Checked ${data.messages_checked} emails — imported ${data.imported} new bill${data.imported === 1 ? "" : "s"}${data.skipped ? `, skipped ${data.skipped} (already saved or not bills)` : ""}. ${data.note || ""}`);
+      if (data.imported > 0) { setFilter("All Documents"); setQuery(""); await loadBills(); }
+    } catch (e) {
+      setGmailResult(e.message);
+    } finally { setGmailImporting(false); }
   }
 
   useEffect(() => {
@@ -353,6 +389,18 @@ function App() {
               <div className="intro-foot">Keep your purchase records together and review each saved receipt whenever you need it.</div>
             </section>
 
+            {auth?.connected && (
+              <section className="intro-card">
+                <div className="intro-icon"><Mail size={24} /></div>
+                <div className="intro-copy"><h2>Bills straight from your Gmail</h2><p>{gmailStatus?.connected ? `Connected to ${gmailStatus.email}. Import invoice emails from the last year into your vault.` : "Connect Gmail once, and Raseed will find your invoice emails and add them to your vault for you."}</p></div>
+                {gmailStatus?.connected
+                  ? <button className="soft-button" onClick={importFromGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning your Gmail…" : <><Mail size={15} /> Import bills from Gmail</>}</button>
+                  : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}><Mail size={15} /> Connect Gmail</a>}
+                <div className="intro-foot">{gmailImporting ? "This can take a minute or two for a full inbox — bills already in your vault are skipped automatically." : "Connect with the same Google account you logged in with. Raseed only reads emails with invoice or receipt attachments — it never sends or deletes mail."}</div>
+              </section>
+            )}
+            {gmailResult && <div className="notice"><Check size={17} /><span>{gmailResult}</span><button onClick={() => setGmailResult("")}><X size={16} /></button></div>}
+
           </>
         )}
 
@@ -362,6 +410,9 @@ function App() {
             <div className="setting-row"><div className="setting-symbol"><Bell size={19} /></div><div className="setting-copy"><b>Warranty reminders</b><span>Show bills whose warranty is expiring soon.</span></div><button className={`toggle ${remindersEnabled ? "on" : ""}`} onClick={() => { setRemindersEnabled(v => !v); setNotice(`Warranty reminders ${remindersEnabled ? "paused" : "enabled"}.`); }} aria-label="Toggle reminders"><span /></button></div>
             <div className="setting-row"><div className="setting-symbol"><Moon size={19} /></div><div className="setting-copy"><b>Appearance</b><span>Switch between light and dark themes.</span></div><button className="soft-button" onClick={() => setDark(v => !v)}>{dark ? <Sun size={16} /> : <Moon size={16} />}{dark ? "Light mode" : "Dark mode"}</button></div>
             <div className="setting-row"><div className="setting-symbol"><ShieldCheck size={19} /></div><div className="setting-copy"><b>File storage</b><span>Uploads are sent to your backend; Cloudinary credentials stay server-side.</span></div></div>
+            {auth?.connected && (
+              <div className="setting-row"><div className="setting-symbol"><Mail size={19} /></div><div className="setting-copy"><b>Gmail import</b><span>{gmailStatus?.connected ? `Connected (${gmailStatus.email}) — import invoice emails into your vault.` : "Connect Gmail to import invoice emails automatically."}</span></div>{gmailStatus?.connected ? <button className="soft-button" onClick={importFromGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning…" : "Import bills"}</button> : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}>Connect Gmail</a>}</div>
+            )}
             {auth?.connected && (
               <div className="setting-row"><div className="setting-symbol"><UserRound size={19} /></div><div className="setting-copy"><b>{auth.profile?.name || "Your account"}</b><span>{auth.email}{auth.profile?.purpose ? ` · ${auth.profile.purpose}` : ""}{auth.profile?.age ? ` · Age ${auth.profile.age}` : ""}</span></div><button className="soft-button" onClick={logout}><LogOut size={16} /> Log out</button></div>
             )}
