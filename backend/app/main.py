@@ -48,6 +48,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from google.oauth2.credentials import Credentials
 
+from google.auth.exceptions import RefreshError
+
 from googleapiclient.discovery import build
 
 from googleapiclient.errors import HttpError
@@ -1999,6 +2001,30 @@ def auth_logout(request: Request):
 
     return {"ok": True}
 
+@app.get("/api/gmail/status")
+
+def gmail_status(request: Request):
+
+    email = current_owner(request)
+
+    if email == "local-demo":
+
+        return {"connected": False, "email": None}
+
+    with db() as conn:
+
+        row = conn.execute(
+
+            "SELECT email FROM gmail_connections WHERE email = ?",
+
+            (email,),
+
+        ).fetchone()
+
+    return {"connected": bool(row), "email": email if row else None}
+
+# --------------------------------------------------
+
 # --------------------------------------------------
 
 # GMAIL BILL SCANNER
@@ -2022,6 +2048,16 @@ def scan_gmail(request: Request):
         )
 
     credentials = get_gmail_credentials(email)
+
+    # Bound the work per scan so a large inbox cannot make the
+    # request run for many minutes: import at most this many NEW
+    # bills per click. Duplicates are detected and skipped cheaply,
+    # so pressing Import again simply continues where this stopped.
+    MAX_NEW_PER_SCAN = 30
+
+    processed_new = 0
+
+    stop_scan = False
 
     # Search only recent purchase-related messages.
 
@@ -2049,15 +2085,27 @@ def scan_gmail(request: Request):
 
         )
 
-        result = service.users().messages().list(
+        try:
 
-            userId="me",
+            result = service.users().messages().list(
 
-            q=query,
+                userId="me",
 
-            maxResults=100,
+                q=query,
 
-        ).execute()
+                maxResults=100,
+
+            ).execute()
+
+        except RefreshError as exc:
+
+            raise HTTPException(
+
+                status_code=401,
+
+                detail="Your Gmail connection expired. Please connect Gmail again.",
+
+            ) from exc
 
         messages = result.get("messages", [])
 
@@ -2238,6 +2286,14 @@ def scan_gmail(request: Request):
                         skipped += 1
 
                         continue
+
+                    if processed_new >= MAX_NEW_PER_SCAN:
+
+                        stop_scan = True
+
+                        break
+
+                    processed_new += 1
 
                     if attachment_id:
 
@@ -2422,7 +2478,7 @@ def scan_gmail(request: Request):
 
                                 )
 
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                                 """,
 
@@ -2500,6 +2556,10 @@ def scan_gmail(request: Request):
 
                         temp_path = None
 
+                if stop_scan:
+
+                    break
+
             except Exception as exc:
 
                 skipped += 1
@@ -2530,19 +2590,25 @@ def scan_gmail(request: Request):
 
             "skipped": skipped,
 
+            "more_remaining": stop_scan,
+
             "search_window": "Last 365 days",
 
             "errors": errors[:5],
 
             "note": (
 
-                "Recent invoice-related messages were checked. "
+                "Imported a first batch from your Gmail. Press Import "
 
-                "Review extracted details for accuracy. "
+                "again to continue - bills already imported are "
 
-                "This scan runs when you click the button; "
+                "skipped automatically."
 
-                "real-time background monitoring is not enabled yet."
+                if stop_scan else
+
+                "Your Gmail scan is complete. Review extracted "
+
+                "details for accuracy."
 
             ),
 
