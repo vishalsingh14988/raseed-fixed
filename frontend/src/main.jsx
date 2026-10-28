@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   Bell, Check, ChevronDown, ClipboardList, FileText, Home, Search,
   ShieldCheck, Settings, Upload, Camera, X, Clock3, Trash2, ExternalLink,
-  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn, Mail
+  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn, Mail, Receipt, Wallet
 } from "lucide-react";
 import "./styles.css";
 
@@ -73,6 +73,86 @@ function Status({ status }) {
   const cls = status === "Active" ? "active" : status === "Expiring Soon" ? "soon" : status === "Expired" ? "expired" : "none";
   return <span className={`status ${cls}`}>{status || "No Warranty"}</span>;
 }
+
+const GMAIL_LOGO = "/gmail-logo.png"; // bundled official Gmail icon — always loads, even on slow networks
+// Frontend mirror of the backend company map — used only when a bill
+// comes from an older backend without logo_url/company_about, so a
+// logo still shows. The backend values always win when present.
+const COMPANY_FALLBACK = {
+  eatsure: ["eatsure.com", "Food delivery"], rapido: ["rapido.bike", "Bike taxi & rides"],
+  croma: ["croma.com", "Electronics store"], samsung: ["samsung.com", "Electronics"],
+  oneplus: ["oneplus.in", "Smartphones"], ajio: ["ajio.com", "Fashion shopping"],
+  amazon: ["amazon.in", "Online shopping"], flipkart: ["flipkart.com", "Online shopping"],
+  zomato: ["zomato.com", "Food delivery"], swiggy: ["swiggy.com", "Food delivery"],
+  myntra: ["myntra.com", "Fashion shopping"], bigbasket: ["bigbasket.com", "Groceries"],
+  blinkit: ["blinkit.com", "Quick groceries"], ola: ["olacabs.com", "Ride-hailing"],
+  uber: ["uber.com", "Ride-hailing"], apple: ["apple.com", "Electronics"],
+  xiaomi: ["mi.com", "Electronics"], mi: ["mi.com", "Electronics"],
+  boat: ["boat-lifestyle.com", "Audio accessories"], reliance: ["reliancedigital.in", "Electronics store"],
+  dmart: ["dmart.in", "Groceries & daily needs"], decathlon: ["decathlon.in", "Sports store"],
+  makemytrip: ["makemytrip.com", "Travel booking"], irctc: ["irctc.co.in", "Train tickets"],
+  nykaa: ["nykaa.com", "Beauty shopping"], zepto: ["zepto.com", "Quick groceries"],
+  ikea: ["ikea.com", "Furniture"], "vijay sales": ["vijaysales.com", "Electronics store"],
+};
+// Company logos bundled with the site itself (frontend/public/logos),
+// so the big companies' logos always load instantly; any other known
+// company falls back to Google's favicon service, then to the default
+// bill icon if that fails too.
+const BUNDLED_LOGOS = new Set(["eatsure.com", "rapido.bike", "croma.com", "ajio.com", "amazon.in", "flipkart.com", "zomato.com", "swiggy.com", "samsung.com", "oneplus.in", "myntra.com", "bigbasket.com", "blinkit.com", "uber.com", "olacabs.com", "apple.com", "mi.com", "boat-lifestyle.com", "reliancedigital.in", "dmart.in", "decathlon.in", "makemytrip.com", "irctc.co.in", "nykaa.com", "zepto.com", "ikea.com", "vijaysales.com"]);
+function companyInfo(bill) {
+  const seller = String(bill?.seller || "").toLowerCase();
+  let domain = bill?.company_domain || "", about = bill?.company_about || "";
+  if (!domain || !about) {
+    for (const key of Object.keys(COMPANY_FALLBACK).sort((a, b) => b.length - a.length)) {
+      if (seller.includes(key)) {
+        if (!domain) domain = COMPANY_FALLBACK[key][0];
+        if (!about) about = COMPANY_FALLBACK[key][1];
+        break;
+      }
+    }
+  }
+  const favicon = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=128` : "";
+  const logo = (domain && BUNDLED_LOGOS.has(domain)) ? `/logos/${domain}.png`
+    : bill?.logo_url || favicon;
+  const logoFallback = logo !== favicon ? favicon : "";
+  const source = bill?.source || (String(bill?.source_key || "").startsWith("gmail:") ? "gmail" : "scan");
+  return { domain, about, logo, logoFallback, source };
+}
+// A bill's company logo: the real company logo when the AI/reader
+// identified the company, a basic bill (receipt) icon when it could
+// not — never a blank space. A small corner badge shows how the bill
+// arrived: Gmail logo for Gmail imports, a camera for scanned bills.
+function BillLogo({ bill, hideBadge = false }) {
+  const { logo, logoFallback, source } = companyInfo(bill);
+  // Stage 0: best logo (bundled with the site). Stage 1: Google's
+  // favicon service for that company. Stage 2: the default bill icon —
+  // so a missing logo file never leaves a broken image.
+  const [stage, setStage] = useState(0);
+  useEffect(() => { setStage(0); }, [logo]);
+  const src = stage === 0 ? logo : stage === 1 ? logoFallback : "";
+  return (
+    <span className="bill-logo-wrap">
+      {src
+        ? <img className="bill-logo" src={src} alt="" loading="lazy" onError={() => setStage(s => (s === 0 && logoFallback && logoFallback !== logo) ? 1 : 2)} />
+        : <span className="bill-logo bill-logo-default"><Receipt size={22} /></span>}
+      {!hideBadge && (source === "gmail"
+        ? <span className="source-badge source-gmail" title="Imported from Gmail"><img src={GMAIL_LOGO} alt="Gmail" /></span>
+        : <span className="source-badge source-scan" title="Scanned / uploaded bill"><Camera size={9} /></span>)}
+    </span>
+  );
+}
+function daysLeft(end) {
+  if (!end) return null;
+  const d = new Date(`${end}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
+const CAT_COLORS = {
+  "Food": ["#ffeef0", "#e11d48"], "Travel": ["#e0f2fe", "#0284c7"], "Electronics": ["#efeaff", "#6d4aff"],
+  "Fashion": ["#e0f2fe", "#2563eb"], "Home & Kitchen": ["#fef3c7", "#b45309"], "Appliances": ["#dcfce7", "#15803d"],
+  "Furniture": ["#ffedd5", "#c2410c"], "Personal care": ["#fce7f3", "#be185d"], "Other": ["#f1eefc", "#6d4aff"],
+};
 
 function App() {
   const [bills, setBills] = useState([]);
@@ -282,6 +362,16 @@ function App() {
     }
   }
 
+  // The top Sync Gmail button always takes the user to My Bills, so
+  // they watch the scan happening there — progress at the top of the
+  // list and new bills appearing in it as they are imported.
+  function syncGmail() {
+    setActiveNav("My Bills");
+    setFilter("All Documents");
+    setQuery("");
+    importFromGmail();
+  }
+
   useEffect(() => {
     const timer = setTimeout(loadBills, 200);
     return () => clearTimeout(timer);
@@ -363,6 +453,28 @@ function App() {
     return pool.filter(b => [b.product, b.seller, b.category, b.original_filename, b.invoice_no, b.order_no]
       .map(v => String(v || "").toLowerCase()).join(" ").includes(needle)).slice(0, 6);
   }, [summaryBills, bills, query]);
+  // Home (pastel template): exactly the 5 most recent bills in the left
+  // column; warranty reminders and spending live in the right rail.
+  const recentBills = useMemo(() => (summaryBills.length ? summaryBills : bills).slice(0, 5), [summaryBills, bills]);
+  const warrantyBills = useMemo(() => (summaryBills.length ? summaryBills : bills)
+    .filter(b => b.warranty_lifetime || b.warranty_end)
+    .sort((a, b) => {
+      const ea = daysLeft(a.warranty_end), eb = daysLeft(b.warranty_end);
+      const ax = a.warranty_lifetime ? 0 : ea !== null && ea < 0 ? 1 : 0, bx = b.warranty_lifetime ? 0 : eb !== null && eb < 0 ? 1 : 0;
+      return ax - bx || String(a.warranty_end || "9999").localeCompare(String(b.warranty_end || "9999"));
+    }).slice(0, 3), [summaryBills, bills]);
+  const DONUT_COLORS = ["#6d4aff", "#fb7185", "#38bdf8", "#c4b5fd", "#fbbf24", "#34d399"];
+  const spending = useMemo(() => {
+    const byCat = {};
+    (summaryBills.length ? summaryBills : bills).forEach(b => { const c = b.category || "Other"; byCat[c] = (byCat[c] || 0) + (Number(b.amount) || 0); });
+    return Object.entries(byCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  }, [summaryBills, bills]);
+  const donutGradient = useMemo(() => {
+    const total = spending.reduce((s, [, v]) => s + v, 0);
+    if (!total) return "#efeaff";
+    let acc = 0; const parts = spending.map(([, v], i) => { const start = (acc / total) * 100; acc += v; return `${DONUT_COLORS[i % DONUT_COLORS.length]} ${start}% ${(acc / total) * 100}%`; });
+    return `conic-gradient(${parts.join(", ")})`;
+  }, [spending]);
   const pageTitle = activeNav === "Home" ? (auth ? `Good evening, ${firstName}` : "Good evening") : activeNav;
   const pageSubtitle = activeNav === "Home" ? "Every purchase, safely kept in one place." :
     activeNav === "My Bills" ? "Find and manage all your purchase receipts." :
@@ -385,8 +497,7 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-note">
-          <div className="paper-art"><FileText size={36} /><FileCheck2 size={30} /></div>
-          <p>Har bill sambhaal ke.<br />Every receipt, remembered.</p>
+          <p><b>Never lose a bill again!</b><br />You shop, we remember.</p>
         </div>
         <div className="sidebar-bottom"><ShieldCheck size={15} /> Your bills, in one safe place</div>
       </aside>
@@ -401,7 +512,7 @@ function App() {
               <div className="search-results">
                 {searchMatches.length ? searchMatches.map(bill => (
                   <button key={bill.id} className="search-result" onMouseDown={e => { e.preventDefault(); setSelectedBill(bill); setQuery(""); setSearchFocus(false); }}>
-                    <span className="sr-thumb"><FileText size={16} /></span>
+                    <BillLogo bill={bill} hideBadge />
                     <span className="sr-main"><b>{bill.product || bill.original_filename || "Untitled bill"}</b><small>{bill.seller || bill.category || "Purchase"} · {formatDate(bill.purchase_date)}</small></span>
                     <span className="sr-amount">{money(bill.amount)}</span>
                   </button>
@@ -410,6 +521,9 @@ function App() {
             )}
           </div>
           <div className="top-actions">
+            {auth && !guest && gmailStatus !== null && (gmailStatus.connected
+              ? <button className="sync-gmail-btn" onClick={syncGmail} disabled={gmailImporting}><span className="gmail-logo-circle"><img src={GMAIL_LOGO} alt="Gmail" /></span>{gmailImporting ? "Syncing…" : "Sync Gmail"}</button>
+              : <a className="sync-gmail-btn" href={`${API}/api/auth/gmail/connect`}><span className="gmail-logo-circle"><img src={GMAIL_LOGO} alt="Gmail" /></span>Connect Gmail</a>)}
             <button className="icon-button" title="Warranty reminders" onClick={() => navigate("Reminders")}><Bell size={20} />{remindersEnabled && counts.soon > 0 && <i />}</button>
             {auth === null
               ? <span style={{ display: "inline-block", width: 118, height: 40 }} />
@@ -419,46 +533,78 @@ function App() {
           </div>
         </header>
 
-        <section className="welcome">
-          <div><div className="eyebrow">NAMASTE{auth ? `, ${firstName.toUpperCase()}` : ""}</div><h1>{pageTitle} <Heart className="heart" size={26} /></h1><p>{pageSubtitle}</p></div>
-          {activeNav === "Home" && auth !== null && (guest
-            ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={18} /> Login</a>
-            : <button className="primary-button" onClick={() => setUploadOpen(true)}><Camera size={18} /> Scan / Upload Bill</button>)}
-        </section>
+        {activeNav !== "Home" && (
+          <section className="welcome">
+            <div><div className="eyebrow">NAMASTE{auth ? `, ${firstName.toUpperCase()}` : ""}</div><h1>{pageTitle} <Heart className="heart" size={26} /></h1><p>{pageSubtitle}</p></div>
+          </section>
+        )}
 
         {notice && <div className="notice"><Check size={17} /><span>{notice}</span><button onClick={() => setNotice("")}><X size={16} /></button></div>}
         {error && <div className="alert-error">{error}<button onClick={() => { setError(""); loadBills(); }}>Try again</button></div>}
         {gmailError && <div className="alert-error">{gmailError}<button onClick={() => setGmailError("")}><X size={16} /></button></div>}
+        {gmailResult && activeNav !== "My Bills" && <div className="notice"><Check size={17} /><span>{gmailResult}</span><button onClick={() => setGmailResult("")}><X size={16} /></button></div>}
 
         {activeNav === "Home" && (
-          <>
-            <section className="summary-grid" aria-label="Your bill summary">
-              <div className="summary-card"><small>TOTAL BILLS</small><b>{counts.all}</b><span>saved in your vault</span></div>
-              <div className="summary-card"><small>TOTAL SPENT</small><b>{money(counts.totalSpent || null)}</b><span>across saved bills with an amount</span></div>
-              <div className="summary-card"><small>ACTIVE WARRANTIES</small><b>{counts.active}</b><span>currently covered</span></div>
-              <div className="summary-card"><small>EXPIRING SOON</small><b>{counts.soon}</b><span>ending in the next 30 days</span></div>
-            </section>
-
-            <section className="intro-card">
-              <div className="intro-icon"><FileCheck2 size={24} /></div>
-              <div className="intro-copy"><h2>Your receipts, all together</h2><p>Upload a bill once. Find it whenever you need it.</p></div>
-              <button className="soft-button" onClick={() => navigate("My Bills")}>View my bills <ExternalLink size={15} /></button>
-              <div className="intro-foot">Keep your purchase records together and review each saved receipt whenever you need it.</div>
-            </section>
-
-            {auth?.connected && (
-              <section className="intro-card">
-                <div className="intro-icon"><Mail size={24} /></div>
-                <div className="intro-copy"><h2>Bills straight from your Gmail</h2><p>{gmailStatus?.connected ? `Connected to ${gmailStatus.email}. Import invoice emails from the last year into your vault.` : "Connect Gmail once, and Raseed will find your invoice emails and add them to your vault for you."}</p></div>
-                {gmailStatus?.connected
-                  ? <button className="soft-button" onClick={importFromGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning your Gmail…" : <><Mail size={15} /> Import bills from Gmail</>}</button>
-                  : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}><Mail size={15} /> Connect Gmail</a>}
-                <div className="intro-foot">{gmailImporting ? "Progress updates above automatically, and new bills appear in your list as they are found — no need to refresh. Bills already in your vault are skipped automatically." : "Connect with the same Google account you logged in with. Raseed only reads invoice, receipt and order emails — it never sends or deletes mail."}</div>
+          <div className="home-grid">
+            <div className="home-left">
+              <section className="hero-card">
+                <div className="hero-copy">
+                  <h1>{auth ? `Good evening, ${firstName}` : "Good evening"} 👋</h1>
+                  <p>All your bills, warranties and purchases in one smart place.</p>
+                  {auth !== null && (guest
+                    ? <a className="hero-pill hero-pill-link" href={`${API}/api/auth/google`}><LogIn size={17} /> Login to see your bills <span className="hero-go">→</span></a>
+                    : <button className="hero-pill" onClick={() => setUploadOpen(true)}><Upload size={16} /> Search or upload a bill… <span className="hero-go">→</span></button>)}
+                  <span className="hero-hand">Scan, Save, Stay worry-free!</span>
+                </div>
+                <div className="hero-art"><div className="hero-phone"><span className="hero-phone-logo"><ClipboardList size={22} /></span><b>रसीद</b><span className="hero-check">✓</span></div></div>
               </section>
-            )}
-            {gmailResult && <div className="notice"><Check size={17} /><span>{gmailResult}</span><button onClick={() => setGmailResult("")}><X size={16} /></button></div>}
 
-          </>
+              <section className="summary-grid" aria-label="Your bill summary">
+                <div className="summary-card"><span className="stat-tile" style={{ background: "#efeaff" }}>📄</span><div><small>Total Bills</small><b>{counts.all}</b><span>saved in your vault</span></div></div>
+                <div className="summary-card"><span className="stat-tile" style={{ background: "#ffe4ec" }}>👛</span><div><small>Total Spent</small><b>{money(counts.totalSpent || null)}</b><span>across {counts.all} bills</span></div></div>
+                <div className="summary-card"><span className="stat-tile" style={{ background: "#dcfce7" }}>🛡️</span><div><small>Active Warranties</small><b>{counts.active}</b><span>currently covered</span></div></div>
+                <div className="summary-card"><span className="stat-tile" style={{ background: "#ffedd5" }}>⌛</span><div><small>Expiring Soon</small><b>{counts.soon}</b><span>in next 30 days</span></div></div>
+              </section>
+
+              <section className="panel home-bills">
+                <div className="panel-heading"><div><h2>Recent Bills</h2></div><button className="text-button view-all" onClick={() => navigate("My Bills")}>View all</button></div>
+                {guest ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>Login to see your bills</b><span>Your vault is personal — your bills appear here only after you login.</span><a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={17} /> Login with Google</a></div>
+                  : recentBills.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>No bills here yet</b><span>Upload your first receipt and it will appear here.</span><button className="primary-button" onClick={() => setUploadOpen(true)}><Plus size={17} /> Add a bill</button></div>
+                  : <div className="bill-list">{recentBills.map(bill => { const info = companyInfo(bill); const cc = CAT_COLORS[bill.category] || CAT_COLORS.Other; return (
+                      <button className="bill-row home-row" key={bill.id} onClick={() => setSelectedBill(bill)}>
+                        <BillLogo bill={bill} />
+                        <span className="bill-main"><b>{bill.seller || bill.product || "Untitled bill"}</b><small>{bill.product || bill.category || "Purchase"}{info.about ? ` · ${info.about}` : ""}</small></span>
+                        <span className="bill-date">{formatDate(bill.purchase_date)}</span>
+                        <span className="bill-amt">{money(bill.amount)}</span>
+                        <span className="cat-chip" style={{ background: cc[0], color: cc[1] }}>{bill.category || "Other"}</span>
+                        <span className="row-arrow"><ChevronDown size={17} /></span>
+                      </button>); })}
+                    </div>}
+              </section>
+            </div>
+
+            <div className="home-right">
+              {guest
+                ? <section className="upload-card"><span className="upload-cam">📷</span><b>Scan / Upload Bill</b><span>Login first — your bills are saved to your own vault.</span></section>
+                : <button className="upload-card" onClick={() => setUploadOpen(true)}><span className="upload-cam">📷</span><b>Scan / Upload Bill</b><span>Drag &amp; drop or click to upload</span><small>Supports images, PDFs and screenshots</small></button>}
+              <section className="panel rail-card">
+                <div className="panel-heading"><div><h2>Warranty Reminders</h2></div><button className="text-button view-all" onClick={() => navigate("Reminders")}>View all</button></div>
+                {warrantyBills.length === 0 ? <p className="rail-empty">No warranties yet — bills with a warranty will show here with their days left.</p>
+                  : warrantyBills.map(bill => { const left = daysLeft(bill.warranty_end); return (
+                    <button className="wrow" key={bill.id} onClick={() => setSelectedBill(bill)}>
+                      <BillLogo bill={bill} hideBadge />
+                      <span className="bill-main"><b>{bill.product || bill.seller || "Bill"}</b><small>{bill.warranty_lifetime ? "Lifetime warranty" : left !== null && left < 0 ? `Expired on ${formatDate(bill.warranty_end)}` : `Expires on ${formatDate(bill.warranty_end)}`}</small></span>
+                      <span className={`days-pill ${bill.warranty_lifetime ? "green" : left !== null && left < 0 ? "pink" : left !== null && left <= 30 ? "pink" : "green"}`}>{bill.warranty_lifetime ? "Lifetime" : left === null ? "—" : left < 0 ? "Expired" : `${left} days left`}</span>
+                    </button>); })}
+              </section>
+              <section className="panel rail-card">
+                <div className="panel-heading"><div><h2>Your Spending</h2></div><span className="rail-select">All time</span></div>
+                {spending.length === 0 ? <p className="rail-empty">No spending yet — add bills and your spending chart will appear here.</p>
+                  : <div className="donut-wrap"><div className="donut" style={{ background: donutGradient }}><div className="donut-hole"><b>{money(counts.totalSpent || null)}</b><span>Total</span></div></div>
+                    <div className="donut-legend">{spending.map(([cat, amt], i) => <div className="lrow" key={cat}><i style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} /><span className="lrow-name">{cat}</span><span className="lrow-pct">{counts.totalSpent ? Math.round((amt / counts.totalSpent) * 100) : 0}%</span><b>{money(amt)}</b></div>)}</div></div>}
+              </section>
+            </div>
+          </div>
         )}
 
         {activeNav === "Settings" && (
@@ -468,7 +614,7 @@ function App() {
             <div className="setting-row"><div className="setting-symbol"><Moon size={19} /></div><div className="setting-copy"><b>Appearance</b><span>Switch between light and dark themes.</span></div><button className="soft-button" onClick={() => setDark(v => !v)}>{dark ? <Sun size={16} /> : <Moon size={16} />}{dark ? "Light mode" : "Dark mode"}</button></div>
             <div className="setting-row"><div className="setting-symbol"><ShieldCheck size={19} /></div><div className="setting-copy"><b>File storage</b><span>Uploads are sent to your backend; Cloudinary credentials stay server-side.</span></div></div>
             {auth?.connected && (
-              <div className="setting-row"><div className="setting-symbol"><Mail size={19} /></div><div className="setting-copy"><b>Gmail import</b><span>{gmailStatus?.connected ? `Connected (${gmailStatus.email}) — import invoice emails into your vault.` : "Connect Gmail to import invoice emails automatically."}</span></div>{gmailStatus?.connected ? <button className="soft-button" onClick={importFromGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning…" : "Import bills"}</button> : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}>Connect Gmail</a>}</div>
+              <div className="setting-row"><div className="setting-symbol"><Mail size={19} /></div><div className="setting-copy"><b>Gmail import</b><span>{gmailStatus?.connected ? `Connected (${gmailStatus.email}) — import invoice emails into your vault.` : "Connect Gmail to import invoice emails automatically."}</span></div>{gmailStatus?.connected ? <button className="soft-button" onClick={syncGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning…" : "Import bills"}</button> : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}>Connect Gmail</a>}</div>
             )}
             {auth?.connected && (
               <div className="setting-row"><div className="setting-symbol"><UserRound size={19} /></div><div className="setting-copy"><b>{auth.profile?.name || "Your account"}</b><span>{auth.email}{auth.profile?.purpose ? ` · ${auth.profile.purpose}` : ""}{auth.profile?.age ? ` · Age ${auth.profile.age}` : ""}</span></div><button className="soft-button" onClick={logout}><LogOut size={16} /> Log out</button></div>
@@ -476,11 +622,18 @@ function App() {
           </section>
         )}
 
-        {activeNav !== "Settings" && (
+        {activeNav !== "Settings" && activeNav !== "Home" && (
           <section className="panel bills-panel">
             <div className="panel-heading">
               <div><div className="eyebrow">{activeNav === "Home" ? "YOUR COLLECTION" : "MANAGE YOUR RECEIPTS"}</div><h2>{activeNav === "Home" ? "Recently added bills" : activeNav === "My Bills" ? "My Bills" : activeNav === "Warranty Tracker" ? "Warranty overview" : "Upcoming warranty reminders"}</h2><p>{activeNav === "Warranty Tracker" ? "Warranty details are shown here, not on the home page." : activeNav === "Reminders" ? "Items marked expiring soon are listed first." : "Open a bill to view or update its details."}</p></div>
             </div>
+            {activeNav === "My Bills" && (gmailImporting || gmailResult) && (
+              <div className={`scan-banner ${gmailImporting ? "scanning" : "done"}`}>
+                <span className="gmail-logo-circle"><img src={GMAIL_LOGO} alt="Gmail" /></span>
+                {gmailImporting && <RefreshCw className="spin" size={17} />}
+                <span>{gmailResult || "Scanning your Gmail…"}</span>
+              </div>
+            )}
             <div className="list-toolbar">
               <div className="filter-tabs">{FILTERS.map(f => <button key={f} className={filter === f ? "active" : ""} onClick={() => setFilter(f)}>{f}</button>)}</div>
               <button className="sort-button" onClick={loadBills}><RefreshCw size={15} /> Refresh</button>
@@ -488,14 +641,14 @@ function App() {
             {loading ? <div className="empty-state"><RefreshCw className="spin" size={24} /><b>Loading your bills…</b></div> :
               visibleBills.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>{guest ? "Login to see your bills" : query ? "No matching bills" : filter !== "All Documents" ? "No bills in this view" : "No bills here yet"}</b><span>{guest ? "Your vault is personal — your bills appear here only after you login." : query ? "Try a different search." : filter !== "All Documents" ? `You have ${counts.all} bill${counts.all === 1 ? "" : "s"} saved, but none match “${filter}” right now.` : "Upload your first receipt and it will appear here."}</span>{guest ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={17} /> Login with Google</a> : filter !== "All Documents" || query ? <button className="primary-button" onClick={() => { setFilter("All Documents"); setQuery(""); }}>Show all documents</button> : <button className="primary-button" onClick={() => setUploadOpen(true)}><Plus size={17} /> Add a bill</button>}</div> :
               <div className="bill-list">
-                {visibleBills.map(bill => <button className="bill-row" key={bill.id} onClick={() => setSelectedBill(bill)}>
-                  <span className="receipt-thumb"><FileText size={22} /><small>₹</small></span>
-                  <span className="bill-main"><b>{bill.product || bill.original_filename || "Untitled bill"}</b><small>{bill.seller || bill.category || "Purchase"} · {formatDate(bill.purchase_date)}</small></span>
+                {visibleBills.map(bill => { const info = companyInfo(bill); return <button className="bill-row" key={bill.id} onClick={() => setSelectedBill(bill)}>
+                  <BillLogo bill={bill} />
+                  <span className="bill-main"><b>{bill.product || bill.original_filename || "Untitled bill"}</b><small>{bill.seller || bill.category || "Purchase"}{info.about ? ` · ${info.about}` : ""} · {formatDate(bill.purchase_date)}</small></span>
                   <span className="bill-meta"><small>AMOUNT</small><b>{money(bill.amount)}</b></span>
                   <span className="bill-meta warranty-info"><small>WARRANTY ENDS</small><b>{bill.warranty_lifetime ? "Never (lifetime)" : formatDate(bill.warranty_end)}</b></span>
                   <Status status={bill.warranty_status} />
                   <span className="row-arrow"><ChevronDown size={17} /></span>
-                </button>)}
+                </button>; })}
               </div>
             }
           </section>
@@ -632,6 +785,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
   return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="modal detail-modal">
     <div className="modal-head"><div><div className="eyebrow">YOUR SAVED RECEIPT</div><h2>{editing ? "Edit bill details" : bill.product || "Bill details"}</h2><p>{bill.seller || bill.original_filename || "Purchase record"}</p></div><button className="icon-button" onClick={onClose}><X size={20} /></button></div>
     <div className="detail-status"><Status status={bill.warranty_status} /><span>Added {formatDate((bill.created_at || "").slice(0,10))}</span></div>
+    {!editing && (() => { const info = companyInfo(bill); return <div className="company-strip"><BillLogo bill={bill} /><div><b>{bill.seller || "Unknown company"}</b><span>{info.about || "Company not identified — showing the default bill logo"}</span></div><span className="source-chip">{info.source === "gmail" ? "From Gmail" : "Scanned bill"}</span></div>; })()}
     {editing ? <div className="form-grid">
       <label>Product<input value={form.product} onChange={e => change("product", e.target.value)} /></label>
       <label>Seller<input value={form.seller} onChange={e => change("seller", e.target.value)} /></label>

@@ -646,3 +646,143 @@ a.user-chip { text-decoration: none; }
 .app-shell.dark .sr-main small { color: #8494B8; }
 .app-shell.dark .sr-amount { color: #E7EAF6; }
 .app-shell.dark .search-none { color: #94A3C0; }
+
+/* =========================================
+   RASEED — PASTEL TEMPLATE THEME (approved template v5)
+   Light lavender dashboard, purple gradient touches, sidebar with
+   रसीद wordmark, Sync Gmail pill with the Gmail logo at top right.
+   ========================================= */
+:root{--ink:#221d38;--muted:#8d85ad;--line:#e9e4f8;--paper:#ffffff;--cream:#f4f2fb;--purple:#6d4aff}
+body,.app-shell{background:#f4f2fb;color:#221d38}
+.main-area{background:#f4f2fb}
+.sidebar{background:#fbfaff;border-right:1px solid #ece8fa}
+.brand{color:#2a2350}.brand-mark{background:linear-gradient(135deg,#7b5cff,#5b3df0);color:#fff;border:0;border-radius:14px;box-shadow:0 8px 18px rgba(110,80,255,.35)}
+.brand-name{color:#2a2350;font-family:'DM Sans',sans-serif}
+.brand-caption,.sidebar-bottom{color:#9a94b8}.sidebar-bottom{border-color:#ece8fa}
+.nav-item{color:#5d5778;border-radius:13px;font-weight:600}
+.nav-item:hover{background:#f1eefc;color:#3d3654}
+.nav-item.selected{background:linear-gradient(90deg,#6d4aff,#7f5cff);color:#fff;box-shadow:0 10px 20px rgba(110,80,255,.35)}
+.nav-item.selected:before{display:none}
+.sidebar-note{margin-top:auto;background:linear-gradient(150deg,#efe9ff,#ffe9db);border-radius:18px;padding:18px 16px;color:#7a719e}
+.sidebar-note p{font:14px/1.55 'DM Sans',sans-serif;margin:0}.sidebar-note b{color:#3d2b8f;font-size:16.5px}
+.searchbox{background:#fff;border:0;border-radius:14px;box-shadow:0 2px 10px rgba(80,60,160,.06);color:#a19bbd}
+.searchbox:focus-within{border-color:transparent;box-shadow:0 0 0 3px #6d4aff33}
+.searchbox input{color:#221d38}.searchbox input::placeholder{color:#a19bbd}
+.icon-button{color:#6d4aff;border-radius:50%;background:#fff;box-shadow:0 2px 10px rgba(80,60,160,.06);width:44px;height:44px}
+.icon-button:hover{background:#f1eefc}.icon-button i{background:#ff5a5a;right:9px;top:9px;width:8px;height:8px;border:2px solid #fff}
+.avatar{background:#e7e0ff;color:#6d4aff}.user-chip{color:#221d38;font-weight:700}
+.sync-gmail-btn{display:inline-flex;align-items:center;gap:9px;background:linear-gradient(90deg,#6d4aff,#7f5cff);color:#fff;border:0;border-radius:999px;padding:9px 18px 9px 10px;font-size:14px;font-weight:800;box-shadow:0 10px 22px rgba(110,80,255,.38);white-space:nowrap;text-decoration:none;cursor:pointer}
+.sync-gmail-btn:disabled{opacity:.65;cursor:wait}
+.sync-gmail-btn:hover{filter:brightness(1.06)}
+.gmail-logo-circle{width:26px;height:26px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.gmail-logo-circle img{width:17px;height:17px;display:block}
+.welcome h1,.panel-heading h2,.modal-head h2{font-family:'DM Sans',sans-serif;letter-spacing:-.6px;color:#221d38}
+.welcome p,.panel-heading p{color:#8d85ad}.eyebrow{color:#6d4aff}.heart{color:#a78bfa}
+.primary-button{background:linear-gradient(90deg,#6d4aff,#7f5cff);border:0;border-radius:12px;box-shadow:0 8px 18px rgba(110,80,255,.3)}
+.primary-button:hover{background:#5b3df0;filter:brightness(1.05)}
+.secondary-button,.soft-button{background:#fff;color:#5948d6;border:1.5px solid #e3dcf8;border-radius:999px}
+.secondary-button:hover,.soft-button:hover{background:#f4f1ff;border-color:#c9bdf5}
+.intro-card,.panel{background:#fff;border:0;border-radius:20px;box-shadow:0 2px 14px rgba(80,60,160,.05)}
+.intro-foot{border-color:#f0ecfa;color:#8d85ad}
+.filter-tabs button:hover,.filter-tabs button.active{color:#6d4aff;border-bottom-color:#6d4aff}
+.sort-button{border-radius:999px;border-color:#e7e2f7}
+.bill-row{border-color:#f3f1fa}.bill-row:hover{background:#faf9ff}
+.bill-main b{color:#221d38}.bill-main small,.bill-meta small{color:#9a94b8}.bill-meta b{color:#3d3654}
+.receipt-thumb{background:#efeaff;border-color:#e3dcf8;color:#6d4aff}
+.setting-symbol{background:#efeaff;color:#6d4aff}.setting-row{border-color:#f0ecfa}
+.toggle.on{background:#6d4aff}
+.summary-card{background:#fff;border:0;border-radius:18px;box-shadow:0 2px 10px rgba(80,60,160,.04);display:flex;gap:13px;align-items:flex-start;padding:18px}
+.summary-card small{font-size:13px;letter-spacing:0;text-transform:none;color:#8d85ad}
+.summary-card b{font-size:25px;color:#221d38;margin:1px 0}
+.summary-card span{color:#9a94b8}
+.stat-tile{width:46px;height:46px;border-radius:13px;display:flex!important;align-items:center;justify-content:center;font-size:21px;flex:none}
+.notice{background:#dcfce7;border-color:#bbf7d0;color:#15803d}
+.page-footer{color:#9a94b8}.page-footer span{color:#6d4aff}
+.dropzone{background:#f8f7ff;border-color:#cfc2f5;color:#5948d6}.dropzone:hover{background:#f0edff;border-color:#6d4aff}
+.upload-circle{background:#e9e5ff;color:#6d4aff}
+.form-grid input,.form-grid select{border-color:#ddd6f5;color:#221d38;outline-color:#6d4aff}
+.detail-grid{border-color:#ece8fa;background:#ece8fa}.detail-grid>div{background:#fbfaff}.detail-grid b{color:#221d38}.detail-grid small{color:#8d85ad}
+.file-link{color:#6d4aff}
+.empty-icon{background:#efeaff;color:#6d4aff}
+.search-results{border-color:#e9e4f8}.search-result:hover{background:#f4f1ff}.sr-main b{color:#221d38}.sr-main small{color:#8d85ad}.sr-amount{color:#3d3654}.sr-thumb{background:#efeaff;color:#6d4aff}
+
+/* ---- Home: pastel template layout ---- */
+.home-grid{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:18px;align-items:start;margin-top:26px}
+.home-left{display:grid;gap:18px;min-width:0}.home-right{display:grid;gap:18px}
+.hero-card{background:linear-gradient(100deg,#e6dfff 0%,#efe6ff 45%,#ffeedd 100%);border-radius:22px;padding:26px 28px;display:flex;gap:18px;overflow:hidden;min-height:196px}
+.hero-copy{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start}
+.hero-copy h1{font-size:31px;font-weight:800;color:#241d4d;margin:0;letter-spacing:-.6px}
+.hero-copy p{font-size:15.5px;color:#5d5486;margin:8px 0 0;line-height:1.45}
+.hero-pill{margin-top:20px;background:#fff;border:0;border-radius:999px;display:flex;align-items:center;gap:10px;padding:8px 8px 8px 18px;width:min(430px,100%);box-shadow:0 6px 18px rgba(90,60,180,.12);color:#6f6890;font-size:14px;font-weight:600;cursor:pointer;text-align:left}
+.hero-pill-link{text-decoration:none}
+.hero-go{margin-left:auto;width:38px;height:38px;border-radius:50%;background:#6d4aff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;flex:none}
+.hero-hand{margin-top:auto;padding-top:14px;font-style:italic;font-size:14px;color:#4c3d99;transform:rotate(-3deg)}
+.hero-art{display:flex;align-items:center;justify-content:center;width:150px;flex:none}
+.hero-phone{position:relative;width:92px;height:168px;background:#241d4d;border-radius:20px;transform:rotate(4deg);display:flex;flex-direction:column;align-items:center;padding-top:18px;gap:7px;box-shadow:0 16px 30px rgba(40,25,110,.35);background-image:linear-gradient(160deg,#2b2160,#241d4d)}
+.hero-phone:before{content:"";position:absolute;inset:8px;border-radius:13px;background:linear-gradient(160deg,#efeaff,#dcd0ff)}
+.hero-phone-logo{position:relative;width:34px;height:34px;border-radius:9px;background:#6d4aff;color:#fff;display:flex;align-items:center;justify-content:center;z-index:1}
+.hero-phone b{position:relative;color:#2a2350;font-size:15px;z-index:1}
+.hero-check{position:absolute;left:-24px;bottom:10px;width:42px;height:42px;border-radius:50%;background:#22c55e;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;border:4px solid #f2edff;box-shadow:0 8px 18px rgba(34,197,94,.4);z-index:2}
+.home-bills{margin:0;padding:20px 22px}
+.home-bills .panel-heading h2{font-size:18.5px}
+.view-all{color:#6d4aff;font-weight:700;font-size:13.5px}
+.home-row{grid-template-columns:52px minmax(120px,1fr) 104px 84px 104px 18px}
+.bill-date{font-size:13.5px;color:#8d85ad;white-space:nowrap}
+.bill-amt{font-weight:800;font-size:15px;text-align:right;white-space:nowrap}
+.cat-chip{font-size:12px;font-weight:700;padding:6px 10px;border-radius:8px;text-align:center;white-space:nowrap}
+.upload-card{background:#fff;border:2px dashed #cfc2f5;border-radius:22px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:26px 22px;min-height:196px;color:#221d38;font:inherit;cursor:pointer;width:100%}
+button.upload-card:hover{background:#faf9ff}
+.upload-card .upload-cam{width:58px;height:58px;border-radius:50%;background:#efeaff;display:flex;align-items:center;justify-content:center;font-size:25px;margin-bottom:12px}
+.upload-card b{font-size:17.5px}.upload-card span:not(.upload-cam){font-size:13.5px;color:#6f6890;margin-top:5px}.upload-card small{font-size:12px;color:#a79fc4;margin-top:9px}
+.rail-card{margin:0;padding:20px 22px}.rail-card .panel-heading h2{font-size:18.5px}
+.rail-empty{font-size:13px;color:#9a94b8;line-height:1.6;margin:10px 0 2px}
+.rail-select{font-size:12.5px;font-weight:600;color:#5d5778;border:1px solid #e7e2f7;padding:6px 11px;border-radius:9px}
+.wrow{display:flex;align-items:center;gap:12px;padding:12px 2px;width:100%;background:transparent;border:0;border-top:1px solid #f3f1fa;text-align:left;cursor:pointer;color:inherit}
+.wrow:first-of-type{border-top:0}
+.days-pill{font-size:12px;font-weight:700;padding:6px 11px;border-radius:8px;white-space:nowrap}
+.days-pill.green{background:#dcfce7;color:#15803d}.days-pill.pink{background:#ffe4e6;color:#e11d48}
+.donut-wrap{display:flex;align-items:center;gap:16px;margin-top:10px}
+.donut{width:112px;height:112px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none}
+.donut-hole{width:76px;height:76px;border-radius:50%;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:4px}
+.donut-hole b{font-size:13.5px;color:#221d38}.donut-hole span{font-size:10px;color:#9a94b8}
+.donut-legend{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}
+.lrow{display:flex;align-items:center;gap:8px;font-size:13px}.lrow i{width:10px;height:10px;border-radius:50%;flex:none}
+.lrow-name{color:#5d5778;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow-pct{color:#9a94b8}.lrow b{color:#221d38}
+
+/* ---- Company logos on bills ---- */
+.bill-logo-wrap{position:relative;width:47px;height:47px;flex:none;display:inline-flex}
+.bill-logo{width:47px;height:47px;border-radius:50%;background:#fff;border:1px solid #eee9fb;box-shadow:0 2px 8px rgba(80,60,160,.07);object-fit:contain;padding:8px}
+.bill-logo-default{display:flex;align-items:center;justify-content:center;background:#efeaff;color:#6d4aff;padding:0}
+.source-badge{position:absolute;right:-3px;bottom:-3px;width:17px;height:17px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;overflow:hidden}
+.source-gmail{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.18)}
+.source-gmail img{width:11px;height:11px;display:block}
+.source-scan{background:#6d4aff;color:#fff}
+.search-result .bill-logo-wrap,.search-result .bill-logo{width:34px;height:34px}
+.search-result .bill-logo{padding:5px}
+.company-strip{display:flex;align-items:center;gap:13px;background:#f8f7ff;border:1px solid #ece8fa;border-radius:14px;padding:12px 14px;margin-bottom:16px}
+.company-strip .bill-logo-wrap,.company-strip .bill-logo{width:52px;height:52px}
+.company-strip>div{flex:1;display:flex;flex-direction:column;gap:3px;min-width:0}
+.company-strip b{font-size:14px;color:#221d38}.company-strip span{font-size:12px;color:#8d85ad}
+.source-chip{font-size:11px;font-weight:700;background:#efeaff;color:#5948d6;padding:6px 10px;border-radius:999px;white-space:nowrap}
+
+/* ---- Gmail scanning banner in My Bills ---- */
+.scan-banner{display:flex;align-items:center;gap:11px;background:linear-gradient(90deg,#efeaff,#ffeef5);border:1px solid #ddd2fb;border-radius:14px;padding:13px 15px;margin-top:16px;font-size:13.5px;color:#3d3654;line-height:1.5}
+.scan-banner .gmail-logo-circle{box-shadow:0 1px 5px rgba(0,0,0,.12)}
+.scan-banner svg{color:#6d4aff;flex:none}
+
+/* Pastel dark mode: same layout, deep-purple surfaces */
+.app-shell.dark{background:#14102e;color:#ece9ff}
+.app-shell.dark .main-area{background:#14102e}
+.app-shell.dark .panel,.app-shell.dark .summary-card,.app-shell.dark .upload-card,.app-shell.dark .modal{background:#1e1850;border-color:#342a6e}
+.app-shell.dark .hero-card{background:linear-gradient(100deg,#2b2160,#3a2a6e 55%,#4a3560)}
+.app-shell.dark .hero-copy h1{color:#fff}.app-shell.dark .hero-copy p{color:#c9c2ee}.app-shell.dark .hero-hand{color:#c9bffa}
+.app-shell.dark .panel-heading h2,.app-shell.dark .summary-card b,.app-shell.dark .bill-main b,.app-shell.dark .company-strip b{color:#f2f0ff}
+.app-shell.dark .bill-row:hover{background:#251c5c}
+.app-shell.dark .company-strip{background:#251c5c;border-color:#342a6e}
+.app-shell.dark .scan-banner{background:#251c5c;border-color:#4c3bcF;color:#e6e1ff}
+.app-shell.dark .upload-card{color:#ece9ff}
+.app-shell.dark .donut-hole{background:#1e1850}.app-shell.dark .donut-hole b{color:#fff}
+
+@media(max-width:1180px){.home-grid{grid-template-columns:1fr}.home-right{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:stretch}.upload-card{min-height:0}}
+@media(max-width:800px){.hero-art{display:none}.hero-copy h1{font-size:25px}.home-row{grid-template-columns:47px minmax(0,1fr) 18px}.home-row .bill-date{grid-column:2}.home-row .bill-amt{grid-column:2;text-align:left}.home-row .cat-chip{display:none}.home-row .row-arrow{grid-column:3;grid-row:1}.sync-gmail-btn{padding:8px 12px 8px 8px;font-size:12.5px}.donut-wrap{flex-direction:column;align-items:flex-start}}
