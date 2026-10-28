@@ -22,6 +22,10 @@ import hmac
 
 import time
 
+import threading
+
+from email.utils import parsedate_to_datetime
+
 from datetime import date, datetime
 
 from pathlib import Path
@@ -2026,364 +2030,524 @@ def gmail_status(request: Request):
 # --------------------------------------------------
 
 # --------------------------------------------------
-
 # GMAIL BILL SCANNER
-
 # --------------------------------------------------
+#
+# How a scan runs now (rebuilt after users reported scans that took
+# minutes with no feedback, stopped halfway, produced bills with no
+# date and no amount, and only showed results after a manual refresh):
+#
+# * POST /api/gmail/scan starts the scan in a background thread and
+#   returns at once. GET /api/gmail/scan/status reports live progress
+#   (emails checked / bills imported so far), so the website shows
+#   progress and adds new bills to the list as they land — and a page
+#   refresh no longer loses the scan, the page just reconnects to it.
+# * The scanner follows Gmail's page tokens, so an inbox with more
+#   than one page of invoice emails is actually finished.
+# * An attachment is imported only when it really looks like a bill
+#   (readable text plus an amount or an invoice/order number). Logo
+#   and signature images attached to invoice emails used to become
+#   blank bills with no date and no amount; they are skipped now,
+#   and tiny inline images are never even downloaded.
+# * Image bills are read with the AI reader first (the same reader
+#   manual uploads use), falling back to OCR when AI is unavailable.
+# * When the bill itself yields no date, the email's own date is
+#   used; when it yields no amount, the subject/snippet is searched.
+# * Order emails with no attachment at all (Amazon, Flipkart and
+#   ride receipts often work this way) can become bills too, under
+#   the same strict evidence rules.
 
-@app.post("/api/gmail/scan")
+GMAIL_MAX_NEW_PER_SCAN = 50
+GMAIL_MAX_MESSAGES_PER_SCAN = 400
+GMAIL_MAX_BODY_MESSAGES_PER_SCAN = 100
 
-def scan_gmail(request: Request):
+_gmail_jobs = {}
+_gmail_jobs_lock = threading.Lock()
 
-    email = current_owner(request)
 
-    if email == "local-demo":
+def _gmail_job_update(email, **fields):
+    with _gmail_jobs_lock:
+        job = _gmail_jobs.setdefault(email, {})
+        job.update(fields)
 
-        raise HTTPException(
 
-            status_code=401,
+def _gmail_job_snapshot(email):
+    with _gmail_jobs_lock:
+        job = dict(_gmail_jobs.get(email) or {})
+    return {
+        "state": job.get("state", "idle"),
+        "checked": job.get("checked", 0),
+        "imported": job.get("imported", 0),
+        "skipped": job.get("skipped", 0),
+        "more_remaining": job.get("more_remaining", False),
+        "note": job.get("note", ""),
+        "detail": job.get("detail", ""),
+        "status_code": job.get("status_code", 0),
+        "errors": job.get("errors", []),
+        "started_at": job.get("started_at", ""),
+        "finished_at": job.get("finished_at", ""),
+    }
 
-            detail="Click Connect Gmail and sign in first.",
 
-        )
+def _email_date_iso(headers, internal_date):
+    """The email's own date as YYYY-MM-DD — the fallback purchase date
+    for bills whose text does not yield one."""
+    raw = headers.get("date", "")
+    if raw:
+        try:
+            parsed = parsedate_to_datetime(raw)
+            if parsed is not None:
+                return parsed.date().isoformat()
+        except Exception:
+            pass
+    try:
+        millis = int(internal_date)
+        if millis > 0:
+            return datetime.utcfromtimestamp(millis / 1000).date().isoformat()
+    except Exception:
+        pass
+    return ""
 
+
+def _amount_near_keywords(text):
+    """Amount fallback from an email subject/snippet: prefer a currency
+    value near words like total/paid, else the largest currency value."""
+    if not text:
+        return None
+    labelled = re.search(
+        r"(?:total|paid|payable|amount|charged)\D{0,20}?"
+        r"(?:₹|INR|Rs\.?)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
+        text, re.IGNORECASE)
+    if labelled:
+        try:
+            value = float(labelled.group(1).replace(",", ""))
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    values = []
+    for match in re.findall(
+            r"(?:₹|INR|Rs\.?)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
+            text, re.IGNORECASE):
+        try:
+            values.append(float(match.replace(",", "")))
+        except ValueError:
+            continue
+    values = [v for v in values if v > 0]
+    return max(values) if values else None
+
+
+def _decode_gmail_body(payload):
+    """Best-effort text of an email body (for attachment-less bills)."""
+    chunks = []
+
+    def walk(part):
+        mime = part.get("mimeType", "")
+        body = part.get("body", {}) or {}
+        data = body.get("data")
+        if data and mime in ("text/plain", "text/html"):
+            try:
+                raw = base64.urlsafe_b64decode(
+                    data + "=" * (-len(data) % 4))
+                text = raw.decode("utf-8", errors="replace")
+            except Exception:
+                text = ""
+            if mime == "text/html":
+                text = re.sub(r"<(br|/p|/div|/tr)[^>]*>", "\n", text,
+                              flags=re.IGNORECASE)
+                text = re.sub(r"<[^>]+>", " ", text)
+                text = (text.replace("&nbsp;", " ")
+                        .replace("&amp;", "&")
+                        .replace("&#8377;", "Rs"))
+            chunks.append(text)
+        for child in part.get("parts", []) or []:
+            walk(child)
+
+    walk(payload)
+    text = "\n".join(chunks)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()[:20000]
+
+
+def _gmail_seller_fallback(sender):
+    sender_email = sender.split("<")[-1].split(">")[0]
+    guess = (sender_email.split("@")[0]
+             .replace(".", " ").replace("_", " ").title())
+    return (guess or "Email merchant")[:80]
+
+
+def _list_gmail_messages(service, query, cap):
+    """Fetch message stubs following page tokens. Returns
+    (stubs, more_available)."""
+    stubs = []
+    page_token = None
+    more_available = False
+    while len(stubs) < cap:
+        result = service.users().messages().list(
+            userId="me", q=query, maxResults=100,
+            pageToken=page_token,
+        ).execute()
+        stubs.extend(result.get("messages", []))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    else:
+        more_available = bool(page_token)
+    if len(stubs) > cap:
+        stubs = stubs[:cap]
+        more_available = True
+    return stubs, more_available
+
+
+def _perform_gmail_scan(email, report=None):
+    """Run one full scan for a connected account. `report` (optional)
+    is called with checked/imported/skipped counts as work proceeds.
+    Returns the final summary dict; raises HTTPException on auth/API
+    failures, exactly as the old synchronous endpoint did."""
     credentials = get_gmail_credentials(email)
 
-    # Bound the work per scan so a large inbox cannot make the
-    # request run for many minutes: import at most this many NEW
-    # bills per click. Duplicates are detected and skipped cheaply,
-    # so pressing Import again simply continues where this stopped.
-    MAX_NEW_PER_SCAN = 30
+    def progress(checked, imported, skipped):
+        if report:
+            try:
+                report(checked=checked, imported=imported, skipped=skipped)
+            except Exception:
+                pass
 
-    processed_new = 0
-
-    stop_scan = False
-
-    # Search only recent purchase-related messages.
-
-    # Gmail sorts results by relevance/date, so sort again below.
-
-    query = (
-
+    # Bills arrive two ways: as attachments (invoices/receipts), and as
+    # attachment-less order emails. Search for both, attachments first.
+    attachment_query = (
         'newer_than:365d has:attachment '
-
         '{invoice receipt bill order purchase warranty}'
-
+    )
+    body_query = (
+        'newer_than:365d -has:attachment '
+        '(invoice OR receipt OR "order confirmation" OR '
+        '"payment confirmation" OR "tax invoice" OR '
+        '"your order" OR "order delivered")'
     )
 
     try:
-
         service = build(
-
-            "gmail",
-
-            "v1",
-
-            credentials=credentials,
-
-            cache_discovery=False,
-
+            "gmail", "v1", credentials=credentials, cache_discovery=False,
         )
 
-        try:
+        attachment_stubs, att_more = _list_gmail_messages(
+            service, attachment_query, GMAIL_MAX_MESSAGES_PER_SCAN)
+        body_stubs, body_more = _list_gmail_messages(
+            service, body_query, GMAIL_MAX_BODY_MESSAGES_PER_SCAN)
+        more_remaining = att_more or body_more
 
-            result = service.users().messages().list(
+        # (message stub, allow_body_bill) — attachment mail first.
+        plan = [(stub, False) for stub in attachment_stubs]
+        plan += [(stub, True) for stub in body_stubs]
 
-                userId="me",
-
-                q=query,
-
-                maxResults=100,
-
-            ).execute()
-
-        except RefreshError as exc:
-
-            raise HTTPException(
-
-                status_code=401,
-
-                detail="Your Gmail connection expired. Please connect Gmail again.",
-
-            ) from exc
-
-        messages = result.get("messages", [])
+        # Every Gmail source already in the vault, loaded once: repeat
+        # scans then skip known bills without a database hit per file.
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT source_key FROM bills "
+                "WHERE owner_email=? AND source_key LIKE 'gmail:%'",
+                (email,),
+            ).fetchall()
+        known_keys = {row["source_key"] for row in rows}
 
         imported = 0
-
         skipped = 0
-
         checked = 0
-
         errors = []
+        stop_scan = False
 
-        purchase_terms = re.compile(
-
+        strict_purchase_terms = re.compile(
             r"\b(invoice|receipt|purchase|order confirmation|"
-
             r"order placed|tax invoice|payment confirmation|"
-
             r"bill|warranty|your order|order delivered)\b",
-
             re.IGNORECASE,
-
+        )
+        broader_purchase_terms = re.compile(
+            r"\b(invoice|receipt|purchase|order|confirmation|"
+            r"tax|payment|bill|warranty|delivered|shipment|"
+            r"transaction|thank you for your order|"
+            r"order number|amount paid|your item)\b",
+            re.IGNORECASE,
         )
 
-        for message_stub in messages:
-
+        for message_stub, allow_body in plan:
             checked += 1
-
+            progress(checked, imported, skipped)
             message_id = message_stub["id"]
-
             temp_path = None
-
             try:
-
                 message = service.users().messages().get(
-
-                    userId="me",
-
-                    id=message_id,
-
-                    format="full",
-
+                    userId="me", id=message_id, format="full",
                 ).execute()
 
                 headers = {
-
                     header["name"].lower(): header["value"]
-
-                    for header in message.get(
-
-                        "payload", {}
-
-                    ).get("headers", [])
-
+                    for header in message.get("payload", {}).get("headers", [])
                 }
-
                 subject = headers.get("subject", "Email invoice")
-
                 sender = headers.get("from", "")
-
                 snippet = message.get("snippet", "")
-
                 payload = message.get("payload", {})
+                email_date = _email_date_iso(
+                    headers, message.get("internalDate", ""))
 
                 attachments = []
 
                 def collect_attachments(part):
-
                     filename = part.get("filename", "")
-
                     mime_type = part.get("mimeType", "")
-
                     body = part.get("body", {})
-
                     if filename and (
-
                         mime_type == "application/pdf"
-
                         or mime_type.startswith("image/")
-
                     ):
-
+                        part_headers = {
+                            h["name"].lower(): h["value"]
+                            for h in part.get("headers", []) or []
+                        }
+                        disposition = part_headers.get(
+                            "content-disposition", "")
                         attachments.append({
-
                             "filename": filename,
-
                             "mime_type": mime_type,
-
                             "attachment_id": body.get("attachmentId"),
-
                             "inline_data": body.get("data"),
-
+                            "size": body.get("size", 0) or 0,
+                            "inline": "inline" in disposition.lower(),
                         })
-
                     for child in part.get("parts", []) or []:
-
                         collect_attachments(child)
 
                 collect_attachments(payload)
 
-                if not attachments:
-
-                    skipped += 1
-
-                    continue
-
                 filenames = " ".join(
-
-                    attachment["filename"]
-
-                    for attachment in attachments
-
-                )
-
-                searchable_text = (
-
-                    f"{subject} {sender} {snippet} {filenames}"
-
-                )
-
-                # Allow likely purchase-related emails through using broader keywords.
-
-                broader_purchase_terms = re.compile(
-
-                    r"\b(invoice|receipt|purchase|order|confirmation|"
-
-                    r"tax|payment|bill|warranty|delivered|shipment|"
-
-                    r"transaction|thank you for your order|"
-
-                    r"order number|amount paid|your item)\b",
-
-                    re.IGNORECASE,
-
-                )
+                    attachment["filename"] for attachment in attachments)
+                searchable_text = f"{subject} {sender} {snippet} {filenames}"
 
                 if not broader_purchase_terms.search(searchable_text):
-
                     skipped += 1
-
                     continue
 
+                # ---- Attachment-less order email -> bill from body ----
+                if allow_body and not attachments:
+                    source_key = f"gmail:{message_id}:body"
+                    if source_key in known_keys:
+                        skipped += 1
+                        continue
+                    if imported >= GMAIL_MAX_NEW_PER_SCAN:
+                        stop_scan = True
+                        break
+                    body_text = _decode_gmail_body(payload)
+                    if len(body_text) < 40:
+                        skipped += 1
+                        continue
+                    fields = parse_fields(body_text, "")
+                    amount = fields.get("amount")
+                    if amount is None:
+                        amount = _amount_near_keywords(
+                            f"{subject} {snippet}")
+                    has_ref = bool(fields.get("invoice_no")
+                                   or fields.get("order_no"))
+                    strict_hit = bool(strict_purchase_terms.search(
+                        f"{subject} {body_text[:3000]}"))
+                    if amount is None or not (has_ref or strict_hit):
+                        skipped += 1
+                        continue
+                    purchase_date_value = (
+                        fields.get("purchase_date") or email_date)
+                    warranty_months = fields.get("warranty_months", 0)
+                    warranty_end = fields.get("warranty_end", "") or ""
+                    if (not warranty_end and warranty_months
+                            and purchase_date_value):
+                        try:
+                            warranty_end = add_months(
+                                date.fromisoformat(purchase_date_value),
+                                warranty_months,
+                            ).isoformat()
+                        except (ValueError, TypeError):
+                            warranty_end = ""
+                    product = fields.get("product") or ""
+                    if (not product or product == "New bill"
+                            or len(product) < 4):
+                        product = subject[:100] or "Email bill"
+                    with db() as conn:
+                        conn.execute(
+                            """
+                            INSERT INTO bills (
+                                product, seller, purchase_date, amount,
+                                warranty_months, warranty_end,
+                                warranty_lifetime, category,
+                                invoice_no, order_no,
+                                cloudinary_url, public_id,
+                                original_filename, extracted_text,
+                                created_at, owner_email, source_key
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                product,
+                                fields.get("seller")
+                                or _gmail_seller_fallback(sender),
+                                purchase_date_value,
+                                amount,
+                                warranty_months or None,
+                                warranty_end,
+                                fields.get("warranty_lifetime", 0),
+                                "Other",
+                                fields.get("invoice_no", ""),
+                                fields.get("order_no", ""),
+                                "",
+                                "",
+                                "Email (no attachment)",
+                                body_text,
+                                datetime.utcnow().isoformat(timespec="seconds"),
+                                email,
+                                source_key,
+                            ),
+                        )
+                    known_keys.add(source_key)
+                    imported += 1
+                    progress(checked, imported, skipped)
+                    continue
+
+                if not attachments:
+                    skipped += 1
+                    continue
+
+                # ---- Attachments -> bills ----
                 for attachment in attachments:
-
                     filename = attachment["filename"]
-
                     mime_type = attachment["mime_type"]
-
                     attachment_id = attachment["attachment_id"]
-
                     raw_data = attachment["inline_data"]
 
+                    # Cheap skips before any download: logo/signature
+                    # and tiny inline images are never bills, and OCR
+                    # on them is what used to create blank bills.
+                    filename_low = filename.lower()
+                    if mime_type.startswith("image/"):
+                        if any(word in filename_low for word in (
+                                "logo", "icon", "banner", "spacer",
+                                "pixel", "signature", "tracker")):
+                            skipped += 1
+                            continue
+                        if attachment["size"] and attachment["size"] < 8000:
+                            skipped += 1
+                            continue
+                        if (attachment["inline"] and attachment["size"]
+                                and attachment["size"] < 60000):
+                            skipped += 1
+                            continue
+
                     source_key = (
-
                         f"gmail:{message_id}:"
-
                         f"{attachment_id or filename}"
-
                     )
-
-                    with db() as conn:
-
-                        existing = conn.execute(
-
-                            """
-
-                            SELECT id FROM bills
-
-                            WHERE owner_email=? AND source_key=?
-
-                            """,
-
-                            (email, source_key),
-
-                        ).fetchone()
-
-                    if existing:
-
+                    if source_key in known_keys:
                         skipped += 1
-
                         continue
 
-                    if processed_new >= MAX_NEW_PER_SCAN:
-
+                    if imported >= GMAIL_MAX_NEW_PER_SCAN:
                         stop_scan = True
-
                         break
 
-                    processed_new += 1
-
                     if attachment_id:
-
                         attachment_result = (
-
                             service.users()
-
                             .messages()
-
                             .attachments()
-
                             .get(
-
                                 userId="me",
-
                                 messageId=message_id,
-
                                 id=attachment_id,
-
                             )
-
                             .execute()
-
                         )
-
                         raw_data = attachment_result.get("data", "")
 
                     if not raw_data:
-
                         skipped += 1
-
                         continue
 
                     try:
-
                         file_bytes = base64.urlsafe_b64decode(
-
                             raw_data + "=" * (-len(raw_data) % 4)
-
                         )
-
                     except Exception:
-
                         skipped += 1
-
                         continue
 
-                    if (
-
-                        not file_bytes
-
-                        or len(file_bytes) > 12 * 1024 * 1024
-
-                    ):
-
+                    if not file_bytes or len(file_bytes) > 12 * 1024 * 1024:
                         skipped += 1
-
                         continue
 
                     suffix = Path(filename).suffix or (
-
-                        ".pdf"
-
-                        if mime_type == "application/pdf"
-
-                        else ".jpg"
-
+                        ".pdf" if mime_type == "application/pdf" else ".jpg"
                     )
 
                     try:
-
                         with tempfile.NamedTemporaryFile(
-
-                            delete=False,
-
-                            suffix=suffix,
-
+                            delete=False, suffix=suffix,
                         ) as temp_file:
-
                             temp_file.write(file_bytes)
-
                             temp_path = temp_file.name
 
-                        extracted = extract_text(temp_path, mime_type)
+                        # Image bills: the AI reader first (same as a
+                        # manual upload, and much faster than OCR);
+                        # OCR only when the AI read is unavailable.
+                        ai_fields = {}
+                        if mime_type in (
+                                "image/jpeg", "image/png", "image/webp"):
+                            ai_result = ai_read_bill(file_bytes, mime_type)
+                            if ai_result:
+                                ai_fields = ai_result.get("fields") or {}
+                                ai_text = (ai_result.get("text")
+                                           or "").strip()
+                                if len(ai_text) >= 20:
+                                    extracted = ai_text[:20000]
+                                else:
+                                    extracted = extract_text(
+                                        temp_path, mime_type)
+                            else:
+                                extracted = extract_text(
+                                    temp_path, mime_type)
+                        else:
+                            extracted = extract_text(temp_path, mime_type)
 
                         fields = parse_fields(extracted, filename)
-                        gmail_warranty_months = fields.get("warranty_months", 0)
-                        gmail_purchase_date = fields.get("purchase_date", "")
-                        gmail_warranty_end = fields.get("warranty_end", "") or ""
-                        if not gmail_warranty_end and gmail_warranty_months and gmail_purchase_date:
+                        for ai_key, ai_value in ai_fields.items():
+                            fields[ai_key] = ai_value
+
+                        # Quality gate: a real bill has readable text
+                        # AND an amount or an invoice/order number.
+                        # Anything else (logos, photos, fragments) is
+                        # skipped instead of becoming a blank bill.
+                        has_amount = fields.get("amount") is not None
+                        has_ref = bool(fields.get("invoice_no")
+                                       or fields.get("order_no"))
+                        if len(extracted.strip()) < 40 or not (
+                                has_amount or has_ref):
+                            skipped += 1
+                            continue
+
+                        # Fallbacks: never ship a dateless bill when
+                        # the email itself is dated, and try the
+                        # subject/snippet for a missing amount.
+                        gmail_purchase_date = (
+                            fields.get("purchase_date") or email_date)
+                        gmail_amount = fields.get("amount")
+                        if gmail_amount is None:
+                            gmail_amount = _amount_near_keywords(
+                                f"{subject} {snippet}")
+                        gmail_warranty_months = fields.get(
+                            "warranty_months", 0)
+                        gmail_warranty_end = (
+                            fields.get("warranty_end", "") or "")
+                        if (not gmail_warranty_end
+                                and gmail_warranty_months
+                                and gmail_purchase_date):
                             try:
                                 gmail_warranty_end = add_months(
                                     date.fromisoformat(gmail_purchase_date),
@@ -2393,246 +2557,216 @@ def scan_gmail(request: Request):
                                 gmail_warranty_end = ""
 
                         if not fields.get("seller"):
-
-                            sender_email = (
-
-                                sender.split("<")[-1]
-
-                                .split(">")[0]
-
-                            )
-
-                            seller_guess = (
-
-                                sender_email.split("@")[0]
-
-                                .replace(".", " ")
-
-                                .replace("_", " ")
-
-                                .title()
-
-                            )
-
-                            fields["seller"] = (
-
-                                seller_guess or "Email merchant"
-
-                            )[:80]
+                            fields["seller"] = _gmail_seller_fallback(
+                                sender)
 
                         if (
-
                             not fields.get("product")
-
                             or fields["product"].lower()
-
                             == Path(filename).stem.lower()
-
                         ):
-
                             fields["product"] = (
-
-                                subject[:100]
-
-                                or Path(filename).stem
-
+                                subject[:100] or Path(filename).stem
                             )
 
                         configure_cloudinary()
-
                         uploaded = cloudinary.uploader.upload(
-
                             temp_path,
-
                             folder="billproof/bills",
-
                             resource_type="auto",
-
                             use_filename=True,
-
                             unique_filename=True,
-
                             overwrite=False,
-
                         )
 
                         with db() as conn:
-
                             conn.execute(
-
                                 """
-
                                 INSERT INTO bills (
-
                                     product, seller, purchase_date, amount,
-
-                                    warranty_months, warranty_end, warranty_lifetime, category,
-
+                                    warranty_months, warranty_end,
+                                    warranty_lifetime, category,
                                     invoice_no, order_no,
-
                                     cloudinary_url, public_id,
-
                                     original_filename, extracted_text,
-
                                     created_at, owner_email, source_key
-
                                 )
-
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-
                                 """,
-
                                 (
-
                                     fields.get("product")
-
                                     or subject[:100]
-
                                     or "Email bill",
-
                                     fields.get("seller", "Email merchant"),
-
-                                    fields.get("purchase_date", ""),
-
-                                    fields.get("amount"),
-
+                                    gmail_purchase_date,
+                                    gmail_amount,
                                     gmail_warranty_months or None,
-
                                     gmail_warranty_end,
-
                                     fields.get("warranty_lifetime", 0),
-
                                     "Other",
-
                                     fields.get("invoice_no", ""),
-
                                     fields.get("order_no", ""),
-
                                     uploaded.get("secure_url", ""),
-
                                     uploaded.get("public_id", ""),
-
                                     filename,
-
                                     extracted,
-
                                     datetime.utcnow().isoformat(
-
-                                        timespec="seconds"
-
-                                    ),
-
+                                        timespec="seconds"),
                                     email,
-
                                     source_key,
-
                                 ),
-
                             )
-
+                        known_keys.add(source_key)
                         imported += 1
+                        progress(checked, imported, skipped)
 
                     except sqlite3.IntegrityError:
-
                         # A concurrent scan may have imported it already.
-
                         skipped += 1
-
                     except Exception as exc:
-
                         skipped += 1
-
-                        errors.append(
-
-                            f"{filename}: {str(exc)[:120]}"
-
-                        )
-
+                        errors.append(f"{filename}: {str(exc)[:120]}")
                     finally:
-
                         if temp_path and os.path.exists(temp_path):
-
                             os.unlink(temp_path)
-
                         temp_path = None
 
                 if stop_scan:
-
                     break
 
             except Exception as exc:
-
                 skipped += 1
-
                 errors.append(
-
-                    f"Message processing failed: {str(exc)[:120]}"
-
-                )
-
+                    f"Message processing failed: {str(exc)[:120]}")
             finally:
-
                 if temp_path and os.path.exists(temp_path):
-
                     os.unlink(temp_path)
 
-        if imported:
+        if stop_scan:
+            more_remaining = True
 
+        if imported:
             backup_vault()
 
         return {
-
             "email": email,
-
             "messages_checked": checked,
-
             "imported": imported,
-
             "skipped": skipped,
-
-            "more_remaining": stop_scan,
-
+            "more_remaining": more_remaining,
             "search_window": "Last 365 days",
-
             "errors": errors[:5],
-
             "note": (
-
-                "Imported a first batch from your Gmail. Press Import "
-
+                "Imported a batch from your Gmail. Press Import "
                 "again to continue - bills already imported are "
-
                 "skipped automatically."
-
-                if stop_scan else
-
+                if more_remaining else
                 "Your Gmail scan is complete. Review extracted "
-
                 "details for accuracy."
-
             ),
-
         }
 
-    except HTTPException:
-
-        raise
-
-    except HttpError as exc:
-
+    except RefreshError as exc:
         raise HTTPException(
-
-            status_code=502,
-
-            detail=(
-
-                "Gmail could not be scanned. Check Gmail API access "
-
-                "and reconnect your account if needed."
-
-            ),
-
+            status_code=401,
+            detail="Your Gmail connection expired. Please connect Gmail again.",
         ) from exc
+    except HTTPException:
+        raise
+    except HttpError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Gmail could not be scanned. Check Gmail API access "
+                "and reconnect your account if needed."
+            ),
+        ) from exc
+
+
+def _gmail_scan_worker(email):
+    """Background thread body: run the scan, record progress + result
+    in the job store for /api/gmail/scan/status to serve."""
+    def report(checked, imported, skipped):
+        _gmail_job_update(
+            email, checked=checked, imported=imported, skipped=skipped)
+
+    try:
+        result = _perform_gmail_scan(email, report)
+        _gmail_job_update(
+            email,
+            state="done",
+            checked=result["messages_checked"],
+            imported=result["imported"],
+            skipped=result["skipped"],
+            more_remaining=result["more_remaining"],
+            note=result["note"],
+            errors=result.get("errors", []),
+            finished_at=datetime.utcnow().isoformat(timespec="seconds"),
+        )
+    except HTTPException as exc:
+        _gmail_job_update(
+            email,
+            state="error",
+            detail=str(exc.detail),
+            status_code=exc.status_code,
+            finished_at=datetime.utcnow().isoformat(timespec="seconds"),
+        )
+    except Exception as exc:
+        _gmail_job_update(
+            email,
+            state="error",
+            detail=f"Gmail scan failed: {str(exc)[:200]}",
+            status_code=500,
+            finished_at=datetime.utcnow().isoformat(timespec="seconds"),
+        )
+
+
+@app.post("/api/gmail/scan")
+def scan_gmail(request: Request):
+    """Start a Gmail scan in the background and return at once.
+
+    The scan itself can take minutes on a large inbox; the website
+    follows it through /api/gmail/scan/status instead of holding one
+    request open (which is why scans used to look frozen and only
+    showed results after a manual refresh)."""
+    email = current_owner(request)
+    if email == "local-demo":
+        raise HTTPException(
+            status_code=401,
+            detail="Click Connect Gmail and sign in first.",
+        )
+    get_gmail_credentials(email)  # raises 401 when not connected
+    snapshot = _gmail_job_snapshot(email)
+    if snapshot["state"] == "running":
+        return {"started": False, "already_running": True, **snapshot}
+    _gmail_job_update(
+        email,
+        state="running", checked=0, imported=0, skipped=0,
+        more_remaining=False, note="", detail="", status_code=0,
+        errors=[],
+        started_at=datetime.utcnow().isoformat(timespec="seconds"),
+        finished_at="",
+    )
+    threading.Thread(
+        target=_gmail_scan_worker, args=(email,), daemon=True,
+    ).start()
+    return {"started": True, "already_running": False,
+            **_gmail_job_snapshot(email)}
+
+
+@app.get("/api/gmail/scan/status")
+def gmail_scan_status(request: Request):
+    """Live progress of the signed-in user's Gmail scan, if any."""
+    email = current_owner(request)
+    if email == "local-demo":
+        return {
+            "state": "idle", "checked": 0, "imported": 0, "skipped": 0,
+            "more_remaining": False, "note": "", "detail": "",
+            "status_code": 0, "errors": [], "started_at": "",
+            "finished_at": "",
+        }
+    return _gmail_job_snapshot(email)
+
 
 # --------------------------------------------------
 
@@ -3557,13 +3691,7 @@ async def gmail_push(request: Request):
 
         # Reuse the existing scanner and its duplicate detection.
 
-        fake_request = SimpleNamespace(
-
-            session={"owner_email": email}
-
-        )
-
-        result = scan_gmail(fake_request)
+        result = _perform_gmail_scan(email)
 
         return {
 
