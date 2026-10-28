@@ -946,7 +946,7 @@ KNOWN_SELLERS = (
     "amazon india", "amazon", "flipkart", "croma", "reliance digital",
     "vijay sales", "ikea", "myntra", "blinkit", "ajio", "nykaa",
     "samsung", "apple", "decathlon", "bigbasket", "zepto", "swiggy", "zomato",
-    "rapido", "ola", "uber",
+    "rapido", "ola", "uber", "eatsure",
 )
 
 
@@ -1038,7 +1038,7 @@ def parse_fields(text: str, filename: str):
     ignored = ("invoice", "receipt", "order id", "order number", "gstin",
                "bill to", "ship to", "ship from", "tax invoice", "date:",
                "amount", "subtotal", "original for recipient", "duplicate for",
-               "seller", "consignor", "customer support", "customer care",
+               "seller", "consignor", "customer support", "customer care", "customer name", "customer address",
                "email", "mobile", "state code", "place of supply",
                "payment mode", "carrier", "awb", "hsn", "qty", "price",
                "unit", "mrp", "discount", "taxable", "tax amt",
@@ -1415,6 +1415,48 @@ def ai_read_bill(data: bytes, content_type: str) -> dict:
                 "last_error": f"{type(exc).__name__}: {exc}"[:200],
             })
             continue
+    return {}
+
+
+def _ai_read_pdf(data: bytes) -> dict:
+    """Read an image-only PDF with the AI reader, page by page.
+
+    Some senders (EatSure is one) generate PDFs whose text is drawn
+    as pictures/vector outlines: there is no text layer for the PDF
+    reader, and print OCR on a small free-tier server is too slow —
+    it hits its timeout and the bill is silently skipped, which is
+    why Rapido's text PDFs imported while EatSure's never did.
+    Rendering the pages to images and letting the vision model read
+    them (the same reader used for bill photos) takes seconds.
+    Returns {"text", "fields"} like ai_read_bill, or {}."""
+    if not fitz or not data or not _gemini_api_key():
+        return {}
+    try:
+        merged_text = []
+        merged_fields = {}
+        with fitz.open(stream=data, filetype="pdf") as document:
+            for index in range(min(len(document), 2)):
+                pix = document[index].get_pixmap(
+                    dpi=150, colorspace=fitz.csRGB, alpha=False)
+                result = ai_read_bill(pix.tobytes("png"), "image/png")
+                if not result:
+                    continue
+                page_text = (result.get("text") or "").strip()
+                if page_text:
+                    merged_text.append(page_text)
+                for key, value in (result.get("fields") or {}).items():
+                    merged_fields.setdefault(key, value)
+                # Receipts put everything that matters on page 1;
+                # only read page 2 when the amount is still missing.
+                if merged_fields.get("amount") is not None:
+                    break
+        if merged_text:
+            return {
+                "text": "\n".join(merged_text)[:20000],
+                "fields": merged_fields,
+            }
+    except Exception as exc:
+        print(f"AI PDF READ ERROR: {type(exc).__name__}: {exc}")
     return {}
 
 
@@ -2516,6 +2558,18 @@ def _perform_gmail_scan(email, report=None):
                         else:
                             extracted = extract_text(temp_path, mime_type)
 
+                        if (mime_type == "application/pdf"
+                                and len(extracted.strip()) < 40):
+                            # Image-only PDF (no text layer): read the
+                            # pages with the AI reader instead of OCR.
+                            pdf_ai = _ai_read_pdf(file_bytes)
+                            if pdf_ai:
+                                pdf_text = (pdf_ai.get("text") or "").strip()
+                                if len(pdf_text) >= 20:
+                                    extracted = pdf_text[:20000]
+                                for k, v in (pdf_ai.get("fields") or {}).items():
+                                    ai_fields.setdefault(k, v)
+
                         fields = parse_fields(extracted, filename)
                         for ai_key, ai_value in ai_fields.items():
                             fields[ai_key] = ai_value
@@ -3052,6 +3106,15 @@ async def upload_bill(
                           len(ai_text), "characters")
                     text = ai_text[:20000]
                 ai_fields = ai_result.get("fields") or {}
+
+        if (file.content_type or "") == "application/pdf" and len(text.strip()) < 40:
+            pdf_ai = _ai_read_pdf(data)
+            if pdf_ai:
+                pdf_text = (pdf_ai.get("text") or "").strip()
+                if len(pdf_text) >= 20:
+                    text = pdf_text[:20000]
+                for k, v in (pdf_ai.get("fields") or {}).items():
+                    ai_fields.setdefault(k, v)
 
         fields = parse_fields(text, filename)
         for ai_key, ai_value in ai_fields.items():
