@@ -1098,6 +1098,157 @@ def enrich_company(seller, ai_fields=None) -> dict:
     }
 
 
+# --------------------------------------------------
+# BILL CATEGORIES — automatic categorisation
+# --------------------------------------------------
+# Fixed vocabulary: must match the frontend CAT_COLORS keys in
+# main.jsx exactly, because the spending donut groups bills by these
+# values. Almost every bill used to be stored as "Other", which left
+# the donut at 100% Other; infer_category() now decides the category
+# at insert time, and row_to_dict() re-infers at read time for bills
+# already stored as "Other" (no re-import needed).
+BILL_CATEGORIES = (
+    "Food", "Travel", "Electronics", "Fashion", "Home & Kitchen",
+    "Appliances", "Furniture", "Personal care", "Other",
+)
+
+# Sellers whose range is basically a single category. Amazon and
+# Flipkart are deliberately absent: they sell everything, so their
+# bills fall through to the keyword rules below.
+SELLER_CATEGORY = {
+    "eatsure": "Food",
+    "zomato": "Food",
+    "swiggy": "Food",
+    "faasos": "Food",
+    "bigbasket": "Food",
+    "big basket": "Food",
+    "blinkit": "Food",
+    "zepto": "Food",
+    "dmart": "Food",
+    "d-mart": "Food",
+    "avenue supermarts": "Food",
+    "rapido": "Travel",
+    "ola": "Travel",
+    "uber": "Travel",
+    "irctc": "Travel",
+    "makemytrip": "Travel",
+    "make my trip": "Travel",
+    "croma": "Electronics",
+    "samsung": "Electronics",
+    "oneplus": "Electronics",
+    "one plus": "Electronics",
+    "apple": "Electronics",
+    "xiaomi": "Electronics",
+    "mi": "Electronics",
+    "boat": "Electronics",
+    "reliance digital": "Electronics",
+    "vijay sales": "Electronics",
+    "ajio": "Fashion",
+    "myntra": "Fashion",
+    "decathlon": "Fashion",
+    "ikea": "Furniture",
+    "nykaa": "Personal care",
+}
+
+
+def _seller_category_for(seller) -> str:
+    """SELLER_CATEGORY lookup with the same matching discipline as
+    _company_info_for_seller: case-insensitive, longest keys first,
+    word boundaries for very short keys (so "Chocolate World" does
+    not match "ola", and plain "Reliance" does not claim Electronics
+    — only "Reliance Digital" does)."""
+    name = re.sub(r"\s+", " ", str(seller or "").strip().lower())
+    if not name:
+        return ""
+    for key in sorted(SELLER_CATEGORY, key=len, reverse=True):
+        if len(key) <= 4:
+            found = re.search(rf"\b{re.escape(key)}\b", name)
+        else:
+            found = key in name
+        if found:
+            return SELLER_CATEGORY[key]
+    return ""
+
+
+# Keyword rules, checked in order: Food first (a food order stays
+# Food whatever shop sold it), Appliances before Electronics (a
+# washing machine is not a gadget). Matching uses word boundaries
+# throughout, so "pan" does not fire inside "company".
+_CATEGORY_KEYWORDS = (
+    ("Food", (
+        "burger", "pizza", "biryani", "wrap", "roll", "meal", "food",
+        "restaurant", "cafe", "coffee", "dosa", "thali", "cake",
+        "gulab jamun", "snacks", "grocery", "groceries", "vegetables",
+        "milk",
+    )),
+    ("Appliances", (
+        "washing machine", "refrigerator", "fridge", "microwave",
+        "air conditioner", "ac", "cooler", "geyser", "mixer grinder",
+        "oven", "chimney",
+    )),
+    ("Electronics", (
+        "phone", "smartphone", "mobile", "laptop", "tv", "television",
+        "earbuds", "earphones", "headphones", "charger", "tablet",
+        "smartwatch", "camera", "speaker", "keyboard", "mouse",
+        "monitor",
+    )),
+    ("Fashion", (
+        "shirt", "t-shirt", "shoes", "sneakers", "dress", "jeans",
+        "kurta", "saree", "jacket", "handbag", "sunglasses",
+    )),
+    ("Furniture", (
+        "sofa", "chair", "table", "bed", "mattress", "wardrobe",
+        "bookshelf",
+    )),
+    ("Home & Kitchen", (
+        "utensil", "cookware", "pressure cooker", "pan", "detergent",
+        "cleaning", "kitchen", "dinner set", "bottle",
+    )),
+    ("Personal care", (
+        "shampoo", "soap", "cream", "lipstick", "makeup", "skincare",
+        "perfume", "toothpaste",
+    )),
+    ("Travel", (
+        "ride", "taxi", "cab", "flight", "air ticket", "train ticket",
+        "hotel", "trip", "petrol", "diesel", "fuel", "toll",
+    )),
+)
+
+
+def _keyword_category(haystack: str) -> str:
+    """First keyword-rule category matching the normalised haystack."""
+    for category, words in _CATEGORY_KEYWORDS:
+        for word in words:
+            needle = re.sub(r"[^a-z0-9]+", " ", word).strip()
+            if needle and re.search(rf"\b{re.escape(needle)}\b", haystack):
+                return category
+    return ""
+
+
+def infer_category(seller, product, text, ai_fields=None) -> str:
+    """Best-guess category for a bill, from the fixed BILL_CATEGORIES.
+
+    Priority: (1) the AI reader's own category when it names a valid
+    one, (2) the seller map for single-category sellers,
+    (3) keyword rules over product + seller + a capped slice of the
+    bill text. Falls back to "Other"."""
+    ai_fields = ai_fields or {}
+    ai_category = ai_fields.get("category")
+    if isinstance(ai_category, str) \
+            and ai_category.strip() in BILL_CATEGORIES:
+        return ai_category.strip()
+    seller_category = _seller_category_for(seller)
+    if seller_category:
+        return seller_category
+    haystack = " ".join([
+        str(product or ""),
+        str(seller or ""),
+        str(text or "")[:4000],
+    ]).lower()
+    haystack = f" {re.sub(r'[^a-z0-9]+', ' ', haystack)} "
+    return _keyword_category(haystack) or "Other"
+
+
 def _filename_product(filename: str) -> str:
     """Guess a product from a helpful filename, e.g.
     'Flipkart Samsung Earbuds Tax Invoice.png' -> 'Samsung Earbuds'.
@@ -1439,7 +1590,8 @@ AI_READER_PROMPT = (
     "\"warranty_end\": warranty end/expiry date as YYYY-MM-DD if written, else \"\"; "
     "\"warranty_lifetime\": true if a lifetime warranty is stated, else false; "
     "\"seller_domain\": the seller/company's official website domain (e.g. \"croma.com\"), or \"\" if you do not know it; "
-    "\"company_about\": one short line saying what the company/seller does (e.g. \"Electronics retail\"), or \"\". "
+    "\"company_about\": one short line saying what the company/seller does (e.g. \"Electronics retail\"), or \"\"; "
+    "\"category\": the purchase category, exactly one of \"Food\", \"Travel\", \"Electronics\", \"Fashion\", \"Home & Kitchen\", \"Appliances\", \"Furniture\", \"Personal care\", \"Other\". "
     "Never guess a value you cannot read; use \"\" or null instead."
 )
 
@@ -1500,6 +1652,9 @@ def _normalize_ai_fields(parsed: dict) -> dict:
     about = parsed.get("company_about")
     if isinstance(about, str) and about.strip():
         fields["company_about"] = about.strip()[:140]
+    category = parsed.get("category")
+    if isinstance(category, str) and category.strip() in BILL_CATEGORIES:
+        fields["category"] = category.strip()
     return fields
 
 
@@ -1692,6 +1847,31 @@ def row_to_dict(row):
     result.setdefault("company_domain", "")
 
     result.setdefault("company_about", "")
+
+    # Category backfill: bills saved before automatic categorisation
+    # (nearly everything was stored as "Other") get an inferred
+    # category at read time, so the spending donut splits by real
+    # categories without anyone re-importing old bills. Read-time
+    # only — the stored value is not rewritten here.
+    if not result.get("category") or result.get("category") == "Other":
+
+        try:
+
+            result["category"] = infer_category(
+
+                result.get("seller") or "",
+
+                result.get("product") or "",
+
+                result.get("extracted_text") or "",
+
+            )
+
+        except Exception:
+
+            result.setdefault("category", "Other")
+
+    result.setdefault("category", "Other")
 
     # How this bill arrived: imported from Gmail, or scanned/uploaded.
     source_key = result.get("source_key") or ""
@@ -2610,6 +2790,8 @@ def _perform_gmail_scan(email, report=None):
                         fields.get("seller")
                         or _gmail_seller_fallback(sender))
                     body_company = enrich_company(body_seller, fields)
+                    body_category = infer_category(
+                        body_seller, product, body_text, fields)
                     with db() as conn:
                         conn.execute(
                             """
@@ -2633,7 +2815,7 @@ def _perform_gmail_scan(email, report=None):
                                 warranty_months or None,
                                 warranty_end,
                                 fields.get("warranty_lifetime", 0),
-                                "Other",
+                                body_category,
                                 fields.get("invoice_no", ""),
                                 fields.get("order_no", ""),
                                 "",
@@ -2824,6 +3006,10 @@ def _perform_gmail_scan(email, report=None):
 
                         gmail_company = enrich_company(
                             fields.get("seller", ""), fields)
+                        gmail_category = infer_category(
+                            fields.get("seller", ""),
+                            fields.get("product") or subject[:100],
+                            extracted, fields)
 
                         configure_cloudinary()
                         uploaded = cloudinary.uploader.upload(
@@ -2860,7 +3046,7 @@ def _perform_gmail_scan(email, report=None):
                                     gmail_warranty_months or None,
                                     gmail_warranty_end,
                                     fields.get("warranty_lifetime", 0),
-                                    "Other",
+                                    gmail_category,
                                     fields.get("invoice_no", ""),
                                     fields.get("order_no", ""),
                                     uploaded.get("secure_url", ""),
@@ -3108,7 +3294,7 @@ def list_bills(
 
             WHERE owner_email=?
 
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(NULLIF(purchase_date, ''), substr(created_at, 1, 10)) DESC, created_at DESC, id DESC
 
             """,
 
@@ -3393,6 +3579,17 @@ async def upload_bill(
 
         company = enrich_company(seller, fields)
 
+        # Category: an explicit non-"Other" pick in the upload form
+        # wins. The form defaults to "Other", which means "not
+        # chosen" — infer the category automatically in that case
+        # (the AI reader's own category, if any, is used first).
+        chosen_category = (category or "").strip()
+        if chosen_category != "Other" \
+                and chosen_category in BILL_CATEGORIES:
+            bill_category = chosen_category
+        else:
+            bill_category = infer_category(seller, product, text, fields)
+
         # Prefer an expiry date printed on the invoice, otherwise calculate it.
         warranty_end = fields.get("warranty_end", "") or ""
         if not warranty_end and warranty_months and purchase_date:
@@ -3446,7 +3643,7 @@ async def upload_bill(
 
                     fields.get("warranty_lifetime", 0),
 
-                    category,
+                    bill_category,
 
                     fields.get("invoice_no", ""),
 
@@ -3620,6 +3817,24 @@ def update_bill(
                 "company_about": values.get("company_about") or "",
 
             }
+
+        # Category: a category explicitly included in the payload is
+        # respected (already merged into values above). If the seller
+        # or product changed without one, re-run inference on the new
+        # details so the bill does not keep a stale category.
+        if "category" not in updates and (
+
+                "seller" in updates or "product" in updates):
+
+            values["category"] = infer_category(
+
+                values.get("seller") or "",
+
+                values.get("product") or "",
+
+                values.get("extracted_text") or "",
+
+            )
 
         conn.execute(
 
