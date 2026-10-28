@@ -392,7 +392,13 @@ def init_db():
 
                 owner_email TEXT NOT NULL DEFAULT 'local-demo',
 
-                source_key TEXT DEFAULT ''
+                source_key TEXT DEFAULT '',
+
+                logo_url TEXT DEFAULT '',
+
+                company_domain TEXT DEFAULT '',
+
+                company_about TEXT DEFAULT ''
 
             )
 
@@ -457,6 +463,36 @@ def init_db():
                 ALTER TABLE bills
 
                 ADD COLUMN warranty_lifetime INTEGER DEFAULT 0
+
+            """)
+
+        if "logo_url" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN logo_url TEXT DEFAULT ''
+
+            """)
+
+        if "company_domain" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN company_domain TEXT DEFAULT ''
+
+            """)
+
+        if "company_about" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN company_about TEXT DEFAULT ''
 
             """)
 
@@ -950,6 +986,118 @@ KNOWN_SELLERS = (
 )
 
 
+# Company identification for bill logos: seller name (lowercase key) ->
+# (website domain, one short line on what the company does). The logo
+# shown in the app is the site's favicon for that domain. Unknown
+# sellers are deliberately NOT guessed — they keep empty fields and
+# the frontend shows a default bill logo instead.
+COMPANY_INFO = {
+    "eatsure": ("eatsure.com", "Food delivery"),
+    "rapido": ("rapido.bike", "Bike taxi and ride-hailing"),
+    "croma": ("croma.com", "Electronics retail"),
+    "samsung": ("samsung.com", "Electronics and smartphones"),
+    "oneplus": ("oneplus.in", "Smartphones and electronics"),
+    "one plus": ("oneplus.in", "Smartphones and electronics"),
+    "ajio": ("ajio.com", "Fashion shopping"),
+    "amazon india": ("amazon.in", "Online shopping"),
+    "amazon": ("amazon.in", "Online shopping"),
+    "flipkart": ("flipkart.com", "Online shopping"),
+    "zomato": ("zomato.com", "Food delivery"),
+    "swiggy": ("swiggy.com", "Food delivery"),
+    "myntra": ("myntra.com", "Fashion shopping"),
+    "bigbasket": ("bigbasket.com", "Online groceries"),
+    "big basket": ("bigbasket.com", "Online groceries"),
+    "blinkit": ("blinkit.com", "Quick grocery delivery"),
+    "ola": ("olacabs.com", "Ride-hailing cabs and autos"),
+    "uber": ("uber.com", "Ride-hailing"),
+    "apple": ("apple.com", "Electronics and smartphones"),
+    "xiaomi": ("mi.com", "Smartphones and electronics"),
+    "mi": ("mi.com", "Smartphones and electronics"),
+    "boat": ("boat-lifestyle.com", "Audio accessories"),
+    "boAt": ("boat-lifestyle.com", "Audio accessories"),
+    "reliance digital": ("reliancedigital.in", "Electronics retail"),
+    "reliance": ("reliancedigital.in", "Electronics retail"),
+    "tata": ("tata.com", "Conglomerate — retail, electronics and more"),
+    "dmart": ("dmart.in", "Supermarket and groceries"),
+    "d-mart": ("dmart.in", "Supermarket and groceries"),
+    "avenue supermarts": ("dmart.in", "Supermarket and groceries"),
+    "decathlon": ("decathlon.in", "Sports goods retail"),
+    "makemytrip": ("makemytrip.com", "Travel bookings"),
+    "make my trip": ("makemytrip.com", "Travel bookings"),
+    "irctc": ("irctc.co.in", "Indian Railways train bookings"),
+    "vijay sales": ("vijaysales.com", "Electronics retail"),
+    "ikea": ("ikea.com", "Furniture and home goods"),
+    "nykaa": ("nykaa.com", "Beauty and personal care shopping"),
+    "zepto": ("zeptonow.com", "Quick grocery delivery"),
+}
+
+
+def _clean_domain(value) -> str:
+    """Validate/normalise a website domain from the AI reader.
+
+    Returns '' unless it looks like a real domain: lowercase, no
+    scheme/www prefix left, contains a dot, no spaces or slashes."""
+    if not isinstance(value, str):
+        return ""
+    domain = value.strip().lower()
+    for prefix in ("https://", "http://"):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    if domain.startswith("www."):
+        domain = domain[4:]
+    domain = domain.split("/")[0].split("?")[0].strip().strip(".")
+    if not domain or " " in domain or "." not in domain:
+        return ""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}", domain):
+        return ""
+    return domain
+
+
+def _company_info_for_seller(seller) -> tuple:
+    """COMPANY_INFO lookup tolerant like KNOWN_SELLERS handling:
+    case-insensitive, longest keys first, substring/startswith match,
+    word boundaries for very short keys (ola/uber/mi/boat)."""
+    name = re.sub(r"\s+", " ", str(seller or "").strip().lower())
+    if not name:
+        return "", ""
+    for key in sorted(COMPANY_INFO, key=len, reverse=True):
+        lowered_key = key.lower()
+        if len(lowered_key) <= 4:
+            found = re.search(rf"\b{re.escape(lowered_key)}\b", name)
+        else:
+            found = lowered_key in name
+        if found:
+            return COMPANY_INFO[key]
+    return "", ""
+
+
+def enrich_company(seller, ai_fields=None) -> dict:
+    """Company logo/domain/about for a bill.
+
+    Prefers the AI reader's seller_domain/company_about when present,
+    then the COMPANY_INFO match for the seller, else empty strings
+    (never guess a domain for an unknown seller)."""
+    ai_fields = ai_fields or {}
+    domain = _clean_domain(ai_fields.get("seller_domain") or "")
+    about = ""
+    ai_about = ai_fields.get("company_about")
+    if isinstance(ai_about, str) and ai_about.strip():
+        about = ai_about.strip()[:140]
+    if not domain or not about:
+        known_domain, known_about = _company_info_for_seller(seller)
+        domain = domain or known_domain
+        about = about or known_about
+    logo_url = (
+        f"https://www.google.com/s2/favicons?domain={domain}&sz=128"
+        if domain else ""
+    )
+    return {
+        "logo_url": logo_url,
+        "company_domain": domain,
+        "company_about": about,
+    }
+
+
 def _filename_product(filename: str) -> str:
     """Guess a product from a helpful filename, e.g.
     'Flipkart Samsung Earbuds Tax Invoice.png' -> 'Samsung Earbuds'.
@@ -1289,7 +1437,9 @@ AI_READER_PROMPT = (
     "\"order_no\": the order number/id, or \"\"; "
     "\"warranty_months\": warranty duration in months as an integer (convert years to months; 0 if none stated); "
     "\"warranty_end\": warranty end/expiry date as YYYY-MM-DD if written, else \"\"; "
-    "\"warranty_lifetime\": true if a lifetime warranty is stated, else false. "
+    "\"warranty_lifetime\": true if a lifetime warranty is stated, else false; "
+    "\"seller_domain\": the seller/company's official website domain (e.g. \"croma.com\"), or \"\" if you do not know it; "
+    "\"company_about\": one short line saying what the company/seller does (e.g. \"Electronics retail\"), or \"\". "
     "Never guess a value you cannot read; use \"\" or null instead."
 )
 
@@ -1344,6 +1494,12 @@ def _normalize_ai_fields(parsed: dict) -> dict:
         fields["warranty_months"] = months
     if parsed.get("warranty_lifetime") in (True, 1, "true", "True", "yes"):
         fields["warranty_lifetime"] = 1
+    domain = _clean_domain(parsed.get("seller_domain"))
+    if domain:
+        fields["seller_domain"] = domain
+    about = parsed.get("company_about")
+    if isinstance(about, str) and about.strip():
+        fields["company_about"] = about.strip()[:140]
     return fields
 
 
@@ -1505,6 +1661,42 @@ def row_to_dict(row):
     result.setdefault("invoice_no", "")
 
     result.setdefault("order_no", "")
+
+    # Company identification backfill: bills saved before logos were
+    # captured (or whose seller the map/AI could only name) still get
+    # a logo + about line from their seller, without a re-upload.
+    if not result.get("logo_url") or not result.get("company_about"):
+
+        try:
+
+            enriched = enrich_company(result.get("seller") or "")
+
+            if not result.get("logo_url"):
+
+                result["logo_url"] = enriched["logo_url"]
+
+            if not result.get("company_domain"):
+
+                result["company_domain"] = enriched["company_domain"]
+
+            if not result.get("company_about"):
+
+                result["company_about"] = enriched["company_about"]
+
+        except Exception:
+
+            pass
+
+    result.setdefault("logo_url", "")
+
+    result.setdefault("company_domain", "")
+
+    result.setdefault("company_about", "")
+
+    # How this bill arrived: imported from Gmail, or scanned/uploaded.
+    source_key = result.get("source_key") or ""
+
+    result["source"] = "gmail" if str(source_key).startswith("gmail:") else "scan"
 
     return result
 
@@ -2414,6 +2606,10 @@ def _perform_gmail_scan(email, report=None):
                     if (not product or product == "New bill"
                             or len(product) < 4):
                         product = subject[:100] or "Email bill"
+                    body_seller = (
+                        fields.get("seller")
+                        or _gmail_seller_fallback(sender))
+                    body_company = enrich_company(body_seller, fields)
                     with db() as conn:
                         conn.execute(
                             """
@@ -2424,14 +2620,14 @@ def _perform_gmail_scan(email, report=None):
                                 invoice_no, order_no,
                                 cloudinary_url, public_id,
                                 original_filename, extracted_text,
-                                created_at, owner_email, source_key
+                                created_at, owner_email, source_key,
+                                logo_url, company_domain, company_about
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 product,
-                                fields.get("seller")
-                                or _gmail_seller_fallback(sender),
+                                body_seller,
                                 purchase_date_value,
                                 amount,
                                 warranty_months or None,
@@ -2447,6 +2643,9 @@ def _perform_gmail_scan(email, report=None):
                                 datetime.utcnow().isoformat(timespec="seconds"),
                                 email,
                                 source_key,
+                                body_company["logo_url"],
+                                body_company["company_domain"],
+                                body_company["company_about"],
                             ),
                         )
                     known_keys.add(source_key)
@@ -2623,6 +2822,9 @@ def _perform_gmail_scan(email, report=None):
                                 subject[:100] or Path(filename).stem
                             )
 
+                        gmail_company = enrich_company(
+                            fields.get("seller", ""), fields)
+
                         configure_cloudinary()
                         uploaded = cloudinary.uploader.upload(
                             temp_path,
@@ -2643,9 +2845,10 @@ def _perform_gmail_scan(email, report=None):
                                     invoice_no, order_no,
                                     cloudinary_url, public_id,
                                     original_filename, extracted_text,
-                                    created_at, owner_email, source_key
+                                    created_at, owner_email, source_key,
+                                    logo_url, company_domain, company_about
                                 )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     fields.get("product")
@@ -2668,6 +2871,9 @@ def _perform_gmail_scan(email, report=None):
                                         timespec="seconds"),
                                     email,
                                     source_key,
+                                    gmail_company["logo_url"],
+                                    gmail_company["company_domain"],
+                                    gmail_company["company_about"],
                                 ),
                             )
                         known_keys.add(source_key)
@@ -3185,6 +3391,8 @@ async def upload_bill(
 
         )
 
+        company = enrich_company(seller, fields)
+
         # Prefer an expiry date printed on the invoice, otherwise calculate it.
         warranty_end = fields.get("warranty_end", "") or ""
         if not warranty_end and warranty_months and purchase_date:
@@ -3212,11 +3420,13 @@ async def upload_bill(
 
                     cloudinary_url, public_id, original_filename,
 
-                    extracted_text, created_at, owner_email
+                    extracted_text, created_at, owner_email,
+
+                    logo_url, company_domain, company_about
 
                 )
 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                 """,
 
@@ -3253,6 +3463,12 @@ async def upload_bill(
                     datetime.utcnow().isoformat(timespec="seconds"),
 
                     current_owner(request),
+
+                    company["logo_url"],
+
+                    company["company_domain"],
+
+                    company["company_about"],
 
                 ),
 
@@ -3386,6 +3602,25 @@ def update_bill(
 
                 warranty_end = ""
 
+        # If the seller changed, the old company logo/about no longer
+        # matches — recompute enrichment for the new seller and store
+        # it (blanking it when the new seller is unknown).
+        if "seller" in updates:
+
+            patch_company = enrich_company(values.get("seller") or "")
+
+        else:
+
+            patch_company = {
+
+                "logo_url": values.get("logo_url") or "",
+
+                "company_domain": values.get("company_domain") or "",
+
+                "company_about": values.get("company_about") or "",
+
+            }
+
         conn.execute(
 
             """
@@ -3396,7 +3631,9 @@ def update_bill(
 
                 warranty_months=?, warranty_end=?, category=?,
 
-                invoice_no=?, order_no=?, warranty_lifetime=?
+                invoice_no=?, order_no=?, warranty_lifetime=?,
+
+                logo_url=?, company_domain=?, company_about=?
 
             WHERE id=?
 
@@ -3423,6 +3660,12 @@ def update_bill(
                 values.get("order_no") or "",
 
                 values.get("warranty_lifetime") or 0,
+
+                patch_company["logo_url"],
+
+                patch_company["company_domain"],
+
+                patch_company["company_about"],
 
                 bill_id,
 
