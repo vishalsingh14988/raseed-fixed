@@ -99,6 +99,7 @@ function App() {
   const guest = !!auth && auth.auth_configured && !auth.connected;
   const guestRef = React.useRef(false);
   guestRef.current = guest;
+  const gmailPollingRef = React.useRef(false);
   // Until the sign-in check answers, greet neutrally: showing a name
   // here made it look as if the user was signed in, then "flip" to
   // Guest once the real answer arrived.
@@ -143,7 +144,18 @@ function App() {
       try {
         const r = await apiFetch("/api/gmail/status");
         const d = await r.json();
-        if (!cancelled && r.ok) setGmailStatus(d);
+        if (!cancelled && r.ok) {
+          setGmailStatus(d);
+          // If a scan is still running on the server (e.g. the page
+          // was refreshed mid-scan), reconnect to its progress.
+          if (d.connected) {
+            try {
+              const sr = await apiFetch("/api/gmail/scan/status");
+              const sd = await sr.json();
+              if (!cancelled && sr.ok && sd.state === "running") pollGmailScan();
+            } catch { /* progress resume is best-effort */ }
+          }
+        }
       } catch { /* leave as unknown; the card still offers Connect */ }
     })();
     return () => { cancelled = true; };
@@ -207,8 +219,53 @@ function App() {
     window.location.reload();
   }
 
+  async function pollGmailScan() {
+    // The scan runs on the server in the background; this loop only
+    // follows its progress. It keeps running after a page refresh too
+    // (the status check below restarts it), so a refresh no longer
+    // loses the scan or its result.
+    if (gmailPollingRef.current) return;
+    gmailPollingRef.current = true;
+    setGmailImporting(true);
+    let lastImported = -1;
+    try {
+      for (let i = 0; i < 240; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        let s;
+        try {
+          const r = await apiFetch("/api/gmail/scan/status");
+          if (!r.ok) break;
+          s = await r.json();
+        } catch { continue; }
+        if (s.state === "running") {
+          setGmailResult(`Scanning your Gmail… checked ${s.checked} email${s.checked === 1 ? "" : "s"}, imported ${s.imported} new bill${s.imported === 1 ? "" : "s"} so far. New bills appear in your list below as they are found — no need to refresh.`);
+          if (s.imported !== lastImported) {
+            lastImported = s.imported;
+            if (s.imported > 0) { setFilter("All Documents"); setQuery(""); await loadBills(); }
+          }
+          continue;
+        }
+        if (s.state === "done") {
+          setGmailResult(`Checked ${s.checked} emails — imported ${s.imported} new bill${s.imported === 1 ? "" : "s"}${s.skipped ? `, skipped ${s.skipped} (already saved or not bills)` : ""}. ${s.note || ""}`);
+          if (s.imported > 0) { setFilter("All Documents"); setQuery(""); await loadBills(); }
+        } else if (s.state === "error") {
+          if (s.status_code === 401) {
+            setGmailStatus({ connected: false, email: null });
+            setGmailResult("Your Gmail connection needs to be renewed — please connect Gmail again.");
+          } else {
+            setGmailResult(s.detail || "Gmail import failed.");
+          }
+        }
+        break;
+      }
+    } finally {
+      gmailPollingRef.current = false;
+      setGmailImporting(false);
+    }
+  }
+
   async function importFromGmail() {
-    setGmailImporting(true); setGmailResult("");
+    setGmailResult("");
     try {
       const res = await apiFetch("/api/gmail/scan", { method: "POST" });
       const data = await res.json().catch(() => ({}));
@@ -218,11 +275,11 @@ function App() {
         return;
       }
       if (!res.ok) throw new Error(data.detail || "Gmail import failed.");
-      setGmailResult(`Checked ${data.messages_checked} emails — imported ${data.imported} new bill${data.imported === 1 ? "" : "s"}${data.skipped ? `, skipped ${data.skipped} (already saved or not bills)` : ""}. ${data.note || ""}`);
-      if (data.imported > 0) { setFilter("All Documents"); setQuery(""); await loadBills(); }
+      setGmailResult("Starting your Gmail scan…");
+      await pollGmailScan();
     } catch (e) {
       setGmailResult(e.message);
-    } finally { setGmailImporting(false); }
+    }
   }
 
   useEffect(() => {
@@ -396,7 +453,7 @@ function App() {
                 {gmailStatus?.connected
                   ? <button className="soft-button" onClick={importFromGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning your Gmail…" : <><Mail size={15} /> Import bills from Gmail</>}</button>
                   : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}><Mail size={15} /> Connect Gmail</a>}
-                <div className="intro-foot">{gmailImporting ? "This can take a minute or two for a full inbox — bills already in your vault are skipped automatically." : "Connect with the same Google account you logged in with. Raseed only reads emails with invoice or receipt attachments — it never sends or deletes mail."}</div>
+                <div className="intro-foot">{gmailImporting ? "Progress updates above automatically, and new bills appear in your list as they are found — no need to refresh. Bills already in your vault are skipped automatically." : "Connect with the same Google account you logged in with. Raseed only reads invoice, receipt and order emails — it never sends or deletes mail."}</div>
               </section>
             )}
             {gmailResult && <div className="notice"><Check size={17} /><span>{gmailResult}</span><button onClick={() => setGmailResult("")}><X size={16} /></button></div>}
