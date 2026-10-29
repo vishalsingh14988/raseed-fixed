@@ -26,7 +26,7 @@ import threading
 
 from email.utils import parsedate_to_datetime
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from pathlib import Path
 
@@ -398,7 +398,9 @@ def init_db():
 
                 company_domain TEXT DEFAULT '',
 
-                company_about TEXT DEFAULT ''
+                company_about TEXT DEFAULT '',
+
+                received_date TEXT DEFAULT ''
 
             )
 
@@ -493,6 +495,16 @@ def init_db():
                 ALTER TABLE bills
 
                 ADD COLUMN company_about TEXT DEFAULT ''
+
+            """)
+
+        if "received_date" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN received_date TEXT DEFAULT ''
 
             """)
 
@@ -927,6 +939,86 @@ def parse_invoice_date(value: str) -> str:
             return datetime.strptime(value, fmt).date().isoformat()
         except ValueError:
             continue
+    return ""
+
+
+def _is_future_date(iso: str) -> bool:
+    """True when an ISO date is implausibly ahead (> today + 1 day).
+
+    A purchase cannot be dated in the future; future dates found on a
+    bill are something else (a subscription renewal, the next billing
+    date, a warranty expiry) and must never become its purchase_date.
+    One day of grace covers timezone edges on same-day bills."""
+    try:
+        return date.fromisoformat(iso) > date.today() + timedelta(days=1)
+    except (ValueError, TypeError):
+        return False
+
+
+_DATE_VALUE_PATTERN = (
+    r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
+    r"\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}|"
+    r"[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|"
+    r"\d{4}-\d{1,2}-\d{1,2}"
+)
+
+_DATE_PATTERNS = (
+    r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+    r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}\b",
+    r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
+    r"\b\d{4}-\d{1,2}-\d{1,2}\b",
+)
+
+# Phrases that mark a nearby date as NOT the day of purchase: it is
+# when a subscription renews, an offer/warranty lapses, or the next
+# charge lands. Google Play renewal mail is the classic case — it
+# prints "Renewal date: <next year>" prominently, and with no guard
+# that date was imported as the bill's purchase date (13 Mar 2027).
+_NON_PURCHASE_DATE_CONTEXT = (
+    "renew", "expir", "valid till", "valid until", "valid upto",
+    "next billing", "will be charged", "auto-renew", "autorenew",
+    "auto renew",
+)
+
+
+def _date_has_non_purchase_context(text: str, start: int) -> bool:
+    """Check the ~30 chars before a date for renewal/expiry wording."""
+    context = text[max(0, start - 30):start].lower()
+    return any(word in context for word in _NON_PURCHASE_DATE_CONTEXT)
+
+
+def _select_purchase_date(text: str) -> str:
+    """Choose a bill's purchase date from its text.
+
+    Labelled dates ("Invoice Date:", "Order Date:", ...) win over bare
+    ones, and every match is scanned rather than stopping at the first
+    — but a candidate is never accepted when it lies in the future or
+    when its label context marks it as a renewal/expiry/next-billing
+    date. A strong label (invoice/purchase/order/bill/transaction) is
+    trusted as-is; only the bare word "date" needs its context checked,
+    since that is how "Renewal date:" used to sneak in."""
+    labelled_re = re.compile(
+        r"(invoice date|purchase date|order date|date of purchase"
+        r"|bill date|transaction date|date)\s*[:\-]?\s*("
+        + _DATE_VALUE_PATTERN + r")",
+        re.IGNORECASE,
+    )
+    for match in labelled_re.finditer(text):
+        iso = parse_invoice_date(match.group(2))
+        if not iso or _is_future_date(iso):
+            continue
+        if match.group(1).lower() == "date" and \
+                _date_has_non_purchase_context(text, match.start()):
+            continue
+        return iso
+    for pattern in _DATE_PATTERNS:
+        for match in re.finditer(pattern, text):
+            iso = parse_invoice_date(match.group(0))
+            if not iso or _is_future_date(iso):
+                continue
+            if _date_has_non_purchase_context(text, match.start()):
+                continue
+            return iso
     return ""
 
 
@@ -1427,32 +1519,9 @@ def parse_fields(text: str, filename: str):
             except ValueError:
                 pass
 
-    purchase_date = ""
-    date_patterns = (
-        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
-        r"\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}\b",
-        r"\b[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
-        r"\b\d{4}-\d{1,2}-\d{1,2}\b",
-    )
-    # Prefer dates near a purchase/invoice label.
-    labelled = re.search(
-        r"(?:invoice date|purchase date|order date|date of purchase|date)\s*[:\-]?\s*"
-        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
-        r"\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\s+\d{4}|"
-        r"[A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|"
-        r"\d{4}-\d{1,2}-\d{1,2})",
-        text,
-        re.IGNORECASE,
-    )
-    if labelled:
-        purchase_date = parse_invoice_date(labelled.group(1))
-    if not purchase_date:
-        for pattern in date_patterns:
-            date_match = re.search(pattern, text)
-            if date_match:
-                purchase_date = parse_invoice_date(date_match.group(0))
-                if purchase_date:
-                    break
+    # Prefer dates near a purchase/invoice label, but never a future
+    # date or a renewal/expiry date (see _select_purchase_date).
+    purchase_date = _select_purchase_date(text)
 
     seller = ""
     lower_text = (text + " " + filename).lower()
@@ -1629,8 +1698,15 @@ def _normalize_ai_fields(parsed: dict) -> dict:
         value = parsed.get(key)
         if isinstance(value, str) and value.strip():
             iso = parse_invoice_date(value.strip())
-            if iso:
-                fields[key] = iso
+            if not iso:
+                continue
+            # A purchase date in the future is a misread (usually a
+            # subscription renewal date): drop it so the caller's
+            # fallbacks (parsed text, email date) apply instead.
+            # warranty_end, by contrast, is supposed to be future.
+            if key == "purchase_date" and _is_future_date(iso):
+                continue
+            fields[key] = iso
     amount = parsed.get("amount")
     try:
         amount = float(str(amount).replace(",", "")) if amount is not None else None
@@ -1775,6 +1851,65 @@ def row_to_dict(row):
 
     result = dict(row)
 
+    # Self-repair of future purchase dates: bills imported before the
+    # future-date guard existed can carry a renewal/next-billing date
+    # as their purchase_date (a Google Play bill showed 13 Mar 2027),
+    # which also poisons any warranty end computed from it. Recompute
+    # from the bill's own saved text with the fixed parser; failing
+    # that, use the day the bill entered the vault. Read-time only,
+    # like the other backfills below — the stored row is not rewritten.
+    stored_purchase_date = str(result.get("purchase_date") or "")
+
+    if stored_purchase_date and _is_future_date(stored_purchase_date):
+
+        repaired_date = ""
+
+        saved_text = result.get("extracted_text") or ""
+
+        if saved_text:
+
+            try:
+
+                repaired_date = parse_fields(
+
+                    saved_text,
+
+                    result.get("original_filename") or "",
+
+                ).get("purchase_date") or ""
+
+            except Exception:
+
+                repaired_date = ""
+
+        if not repaired_date:
+
+            repaired_date = str(result.get("created_at") or "")[:10]
+
+        result["purchase_date"] = repaired_date
+
+        # warranty_end was computed from the bad date at insert time;
+        # recompute it from the repaired date the same way inserts do.
+        # Lifetime warranties have no end date to move.
+        warranty_months = result.get("warranty_months") or 0
+
+        if warranty_months and result.get("warranty_end") \
+                and not result.get("warranty_lifetime") and repaired_date:
+
+            try:
+
+                result["warranty_end"] = add_months(
+
+                    date.fromisoformat(repaired_date),
+
+                    int(warranty_months),
+
+                ).isoformat()
+
+            except (ValueError, TypeError):
+
+                pass
+
     result["warranty_status"] = warranty_status(
 
         result.get("warranty_end", ""),
@@ -1872,6 +2007,25 @@ def row_to_dict(row):
             result.setdefault("category", "Other")
 
     result.setdefault("category", "Other")
+
+    # Arrangement ("received") date: the day this bill arrived
+    # in Raseed — for Gmail bills the day the email came, for
+    # scanned / uploaded bills the day they were added. Bills are
+    # ARRANGED by this date; purchase_date stays the date printed
+    # on the bill and is never used for ordering. Bills saved
+    # before this field existed fall back to the day they entered
+    # the vault (created_at).
+    received_value = str(result.get("received_date") or "")
+
+    try:
+
+        date.fromisoformat(received_value)
+
+    except (ValueError, TypeError):
+
+        received_value = str(result.get("created_at") or "")[:10]
+
+    result["received_date"] = received_value
 
     # How this bill arrived: imported from Gmail, or scanned/uploaded.
     source_key = result.get("source_key") or ""
@@ -2803,9 +2957,9 @@ def _perform_gmail_scan(email, report=None):
                                 cloudinary_url, public_id,
                                 original_filename, extracted_text,
                                 created_at, owner_email, source_key,
-                                logo_url, company_domain, company_about
+                                logo_url, company_domain, company_about, received_date
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 product,
@@ -2828,6 +2982,7 @@ def _perform_gmail_scan(email, report=None):
                                 body_company["logo_url"],
                                 body_company["company_domain"],
                                 body_company["company_about"],
+                                email_date,
                             ),
                         )
                     known_keys.add(source_key)
@@ -3032,9 +3187,9 @@ def _perform_gmail_scan(email, report=None):
                                     cloudinary_url, public_id,
                                     original_filename, extracted_text,
                                     created_at, owner_email, source_key,
-                                    logo_url, company_domain, company_about
+                                    logo_url, company_domain, company_about, received_date
                                 )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     fields.get("product")
@@ -3060,6 +3215,7 @@ def _perform_gmail_scan(email, report=None):
                                     gmail_company["logo_url"],
                                     gmail_company["company_domain"],
                                     gmail_company["company_about"],
+                                    email_date,
                                 ),
                             )
                         known_keys.add(source_key)
@@ -3294,7 +3450,7 @@ def list_bills(
 
             WHERE owner_email=?
 
-            ORDER BY COALESCE(NULLIF(purchase_date, ''), substr(created_at, 1, 10)) DESC, created_at DESC, id DESC
+            ORDER BY COALESCE(NULLIF(received_date, ''), substr(created_at, 1, 10)) DESC, created_at DESC, id DESC
 
             """,
 
@@ -3303,6 +3459,27 @@ def list_bills(
         ).fetchall()
 
     bills = [row_to_dict(row) for row in rows]
+
+    # Bills are ARRANGED by arrival date (received_date): the
+    # day a scanned/uploaded bill was added, or the day a Gmail
+    # bill's email arrived — never by purchase_date, which is
+    # display-only. row_to_dict computes the effective
+    # received_date at read time, so re-sort by it here.
+    bills.sort(
+
+        key=lambda bill: (
+
+            bill.get("received_date") or str(bill.get("created_at") or "")[:10],
+
+            str(bill.get("created_at") or ""),
+
+            bill.get("id") or 0,
+
+        ),
+
+        reverse=True,
+
+    )
 
     if q.strip():
 
@@ -3619,11 +3796,11 @@ async def upload_bill(
 
                     extracted_text, created_at, owner_email,
 
-                    logo_url, company_domain, company_about
+                    logo_url, company_domain, company_about, received_date
 
                 )
 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                 """,
 
@@ -3666,6 +3843,8 @@ async def upload_bill(
                     company["company_domain"],
 
                     company["company_about"],
+
+                    datetime.utcnow().date().isoformat(),
 
                 ),
 
