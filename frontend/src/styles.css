@@ -716,7 +716,7 @@ body,.app-shell{background:#f4f2fb;color:#221d38}
 .hero-pill{margin-top:20px;background:#fff;border:0;border-radius:999px;display:flex;align-items:center;gap:10px;padding:8px 8px 8px 18px;width:min(430px,100%);box-shadow:0 6px 18px rgba(90,60,180,.12);color:#6f6890;font-size:14px;font-weight:600;cursor:pointer;text-align:left}
 .hero-pill-link{text-decoration:none}
 .hero-go{margin-left:auto;width:38px;height:38px;border-radius:50%;background:#6d4aff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;flex:none}
-.hero-hand{margin-top:auto;padding-top:14px;font-style:italic;font-size:14px;color:#4c3d99;transform:rotate(-3deg)}
+.hero-hand{margin-top:auto;padding-top:14px;font-style:italic;font-size:14px;color:#4c3d99}
 .hero-art{display:flex;align-items:center;justify-content:center;width:150px;flex:none}
 .hero-phone{position:relative;width:92px;height:168px;background:#241d4d;border-radius:20px;transform:rotate(4deg);display:flex;flex-direction:column;align-items:center;padding-top:18px;gap:7px;box-shadow:0 16px 30px rgba(40,25,110,.35);background-image:linear-gradient(160deg,#2b2160,#241d4d)}
 .hero-phone:before{content:"";position:absolute;inset:8px;border-radius:13px;background:linear-gradient(160deg,#efeaff,#dcd0ff)}
