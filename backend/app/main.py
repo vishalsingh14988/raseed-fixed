@@ -3498,46 +3498,54 @@ async def unhandled_error_handler(request: Request, exc: Exception):
         content={"detail": f"Server error: {exc.__class__.__name__}: {str(exc)[:160]}"},
     )
 
-def _file_probe():
-    """Server-side test of the Cloudinary API-download path used by
-    the bill-file endpoint. Returns only status codes — no file
-    content, no URLs — so it is safe on the public health check and
-    tells us exactly which hop refuses, if any."""
-    probe = {"raw_backup": "not tried", "image_bill": "not tried"}
-    if not all(_cloudinary_env()):
-        return probe
+_probe_cache = {"at": 0.0, "value": None}
+
+def _probe_stage(cloud_name, api_key, api_secret, rtype, public_id):
     try:
-        configure_cloudinary()
-    except Exception as exc:
-        return {"error": f"config: {str(exc)[:100]}"}
-    try:
-        url = cloudinary.utils.private_download_url(
-            VAULT_BACKUP_PUBLIC_ID, "", resource_type="raw")
+        meta = httpx.get(
+            f"https://api.cloudinary.com/v1_1/{cloud_name}"
+            f"/resources/{rtype}/upload/{public_id}",
+            auth=(api_key, api_secret), timeout=30)
+        if meta.status_code != 200:
+            return f"lookup HTTP {meta.status_code}"
+        url = meta.json().get("secure_url")
+        if not url:
+            return "lookup ok, no file address"
         r = httpx.get(url, timeout=30, follow_redirects=True)
-        probe["raw_backup"] = f"HTTP {r.status_code}"
+        return f"lookup 200, download HTTP {r.status_code}"
     except Exception as exc:
-        probe["raw_backup"] = f"{exc.__class__.__name__}: {str(exc)[:100]}"
-    try:
-        with db() as conn:
-            row = conn.execute(
-                "SELECT public_id, original_filename FROM bills "
-                "WHERE public_id != '' AND cloudinary_url LIKE '%/image/upload/%' "
-                "ORDER BY id LIMIT 1").fetchone()
-        if row:
-            fname = (row["original_filename"] or "").lower()
-            fmt = fname.rsplit(".", 1)[-1] if "." in fname else "pdf"
-            url = cloudinary.utils.private_download_url(
-                row["public_id"], fmt, resource_type="image")
-            r = httpx.get(url, timeout=30, follow_redirects=True)
-            probe["image_bill"] = f"HTTP {r.status_code}"
-        else:
-            probe["image_bill"] = "no image bill found"
-    except Exception as exc:
-        probe["image_bill"] = f"{exc.__class__.__name__}: {str(exc)[:100]}"
+        return f"{exc.__class__.__name__}: {str(exc)[:80]}"
+
+def _file_probe():
+    """Server-side test of the exact path the bill-file endpoint
+    uses (Admin API lookup, then download the file address).
+    Status codes only — safe on the public health check. Cached
+    for five minutes."""
+    import time as _time
+    now = _time.time()
+    if _probe_cache["value"] is not None and now - _probe_cache["at"] < 300:
+        return _probe_cache["value"]
+    probe = {"raw_backup": "not tried", "image_bill": "not tried"}
+    if all(_cloudinary_env()):
+        try:
+            configure_cloudinary()
+            cname, ckey, csecret = _cloudinary_env()
+            probe["raw_backup"] = _probe_stage(
+                cname, ckey, csecret, "raw", VAULT_BACKUP_PUBLIC_ID)
+            with db() as conn:
+                row = conn.execute(
+                    "SELECT public_id FROM bills "
+                    "WHERE public_id != '' AND cloudinary_url LIKE '%/image/upload/%' "
+                    "ORDER BY id LIMIT 1").fetchone()
+            probe["image_bill"] = (
+                _probe_stage(cname, ckey, csecret, "image", row["public_id"])
+                if row else "no image bill found")
+        except Exception as exc:
+            probe["error"] = f"{exc.__class__.__name__}: {str(exc)[:80]}"
+    _probe_cache.update(at=now, value=probe)
     return probe
 
 @app.get("/api/health")
-
 def health():
 
     return {
@@ -3610,31 +3618,37 @@ def bill_file(bill_id: int, request: Request):
         stored_url = row["cloudinary_url"] or ""
         filename = row["original_filename"] or "bill"
     configure_cloudinary()
-    if "/raw/upload/" in stored_url:
-        download_url = cloudinary.utils.private_download_url(
-            public_id, "", resource_type="raw")
-    else:
-        fmt = ""
-        for candidate in (stored_url.split("?")[0], filename):
-            tail = candidate.rsplit(".", 1)
-            if len(tail) == 2 and 0 < len(tail[1]) <= 5:
-                fmt = tail[1].lower()
-                break
-        download_url = cloudinary.utils.private_download_url(
-            public_id, fmt or "pdf", resource_type="image")
+    cloud_name, api_key, api_secret = _cloudinary_env()
+    rtype = "raw" if "/raw/upload/" in stored_url else "image"
     try:
-        fetched = httpx.get(
-            download_url, timeout=45, follow_redirects=True)
+        meta = httpx.get(
+            f"https://api.cloudinary.com/v1_1/{cloud_name}"
+            f"/resources/{rtype}/upload/{public_id}",
+            auth=(api_key, api_secret), timeout=30)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Cloudinary fetch error: {str(exc)[:120]}")
+            detail=f"Storage lookup error: {str(exc)[:120]}")
+    if meta.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(f"Storage lookup failed ({meta.status_code}): "
+                    f"{meta.text[:120]}"))
+    secure_url = meta.json().get("secure_url")
+    if not secure_url:
+        raise HTTPException(
+            status_code=502, detail="Storage returned no file address")
+    try:
+        fetched = httpx.get(
+            secure_url, timeout=45, follow_redirects=True)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"File download error: {str(exc)[:120]}")
     if fetched.status_code != 200:
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"Cloudinary fetch failed ({fetched.status_code}): "
-                f"{fetched.text[:140]}"))
+            detail=f"File download failed ({fetched.status_code})")
     media_type = (
         "application/pdf"
         if filename.lower().endswith(".pdf")
