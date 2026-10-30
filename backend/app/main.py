@@ -3575,10 +3575,19 @@ def bill_file(bill_id: int, request: Request):
                 break
         download_url = cloudinary.utils.private_download_url(
             public_id, fmt or "pdf", resource_type="image")
-    fetched = httpx.get(download_url, timeout=45, follow_redirects=True)
+    try:
+        fetched = httpx.get(
+            download_url, timeout=45, follow_redirects=True)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloudinary fetch error: {str(exc)[:120]}")
     if fetched.status_code != 200:
         raise HTTPException(
-            status_code=502, detail="Could not fetch the bill file")
+            status_code=502,
+            detail=(
+                f"Cloudinary fetch failed ({fetched.status_code}): "
+                f"{fetched.text[:140]}"))
     media_type = (
         "application/pdf"
         if filename.lower().endswith(".pdf")
