@@ -810,6 +810,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
     </div> : <div className="detail-grid">
       <div><small>PRODUCT</small><b>{bill.product || "—"}</b></div><div><small>AMOUNT</small><b>{money(bill.amount)}</b></div>
       <div><small>SELLER</small><b>{bill.seller || "—"}</b></div><div><small>PURCHASE DATE</small><b>{formatDate(bill.purchase_date)}</b></div>
+      <div><small>CATEGORY</small><b>{bill.category || "Other"}</b></div><div><small>RECEIVED ON</small><b>{formatDate(bill.received_date || (bill.created_at || "").slice(0,10))}</b></div>
       <div><small>WARRANTY DURATION</small><b>{bill.warranty_lifetime ? "Lifetime" : bill.warranty_months ? `${bill.warranty_months} months` : "Not specified"}</b></div><div><small>WARRANTY ENDS</small><b>{bill.warranty_lifetime ? "Never (lifetime)" : formatDate(bill.warranty_end)}</b></div>
       <div><small>INVOICE NUMBER</small><b>{bill.invoice_no || "—"}</b></div><div><small>ORDER NUMBER</small><b>{bill.order_no || "—"}</b></div>
     </div>}

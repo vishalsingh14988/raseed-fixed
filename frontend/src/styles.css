@@ -794,3 +794,8 @@ button.upload-card:hover{background:#faf9ff}
 /* No hard purple rectangle around the search box on focus. */
 .searchbox:focus-within { border-color: #E2E8F0; box-shadow: none; }
 .app-shell.dark .searchbox:focus-within { border-color: #262F4D; box-shadow: none; }
+
+/* The global :focus-visible ring (3px purple) also landed on the search
+   INPUT itself — that was the purple rectangle around the search box.
+   The search input never draws it; other controls keep their ring. */
+.searchbox input:focus-visible { outline: none; }
