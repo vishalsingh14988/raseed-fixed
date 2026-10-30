@@ -46,7 +46,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response, JSONResponse
 
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -3491,6 +3491,51 @@ def gmail_scan_status(request: Request):
 
 # --------------------------------------------------
 
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Server error: {exc.__class__.__name__}: {str(exc)[:160]}"},
+    )
+
+def _file_probe():
+    """Server-side test of the Cloudinary API-download path used by
+    the bill-file endpoint. Returns only status codes — no file
+    content, no URLs — so it is safe on the public health check and
+    tells us exactly which hop refuses, if any."""
+    probe = {"raw_backup": "not tried", "image_bill": "not tried"}
+    if not all(_cloudinary_env()):
+        return probe
+    try:
+        configure_cloudinary()
+    except Exception as exc:
+        return {"error": f"config: {str(exc)[:100]}"}
+    try:
+        url = cloudinary.utils.private_download_url(
+            VAULT_BACKUP_PUBLIC_ID, "", resource_type="raw")
+        r = httpx.get(url, timeout=30, follow_redirects=True)
+        probe["raw_backup"] = f"HTTP {r.status_code}"
+    except Exception as exc:
+        probe["raw_backup"] = f"{exc.__class__.__name__}: {str(exc)[:100]}"
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT public_id, original_filename FROM bills "
+                "WHERE public_id != '' AND cloudinary_url LIKE '%/image/upload/%' "
+                "ORDER BY id LIMIT 1").fetchone()
+        if row:
+            fname = (row["original_filename"] or "").lower()
+            fmt = fname.rsplit(".", 1)[-1] if "." in fname else "pdf"
+            url = cloudinary.utils.private_download_url(
+                row["public_id"], fmt, resource_type="image")
+            r = httpx.get(url, timeout=30, follow_redirects=True)
+            probe["image_bill"] = f"HTTP {r.status_code}"
+        else:
+            probe["image_bill"] = "no image bill found"
+    except Exception as exc:
+        probe["image_bill"] = f"{exc.__class__.__name__}: {str(exc)[:100]}"
+    return probe
+
 @app.get("/api/health")
 
 def health():
@@ -3528,6 +3573,8 @@ def health():
             "google_configured": google_oauth_configured(),
 
         },
+
+        "file_probe": _file_probe(),
 
     }
 
