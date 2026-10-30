@@ -842,7 +842,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
       : bill.extracted_text
         ? <button className="file-link as-button" onClick={() => setShowText(v => !v)}><FileText size={16} /> {showText ? "Hide bill text" : "View original bill"}</button>
         : <p className="no-file-note">No original file was saved for this bill — it was imported from the email's text.</p>}
-    {showText && !bill.has_file && bill.extracted_text && <pre className="bill-text-view">{bill.extracted_text}</pre>}
+    {showText && !bill.has_file && bill.extracted_text && <div className="bill-sheet"><div className="bill-sheet-head"><FileText size={14} /><span>ORIGINAL BILL · READ FROM THE EMAIL</span></div><pre>{bill.extracted_text}</pre></div>}
     {error && <div className="inline-error">{error}</div>}
     <div className="modal-foot"><button className="danger-button" onClick={() => onDelete(bill)}><Trash2 size={15} /> Delete</button><span className="modal-spacer" />
       {editing && <button className="secondary-button" onClick={() => setEditing(false)}>Cancel</button>}
