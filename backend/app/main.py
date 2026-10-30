@@ -46,7 +46,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -2145,48 +2145,7 @@ def row_to_dict(row):
 
     result["source"] = "gmail" if str(source_key).startswith("gmail:") else "scan"
 
-    # Cloudinary blocks UNSIGNED delivery of PDFs stored as image
-    # resources (clicking the bill file returned 401 "deny or ACL
-    # failure"). A signed URL is allowed, so hand the frontend one
-    # for those older bills. New PDF uploads are stored as raw
-    # resources instead, which deliver publicly.
-    try:
-
-        _url = str(result.get("cloudinary_url") or "")
-
-        _pid = str(result.get("public_id") or "")
-
-        if _pid and "/image/upload/" in _url and _url.lower().split("?")[0].endswith(".pdf") and all(_cloudinary_env()):
-
-            _cname, _ckey, _csecret = _cloudinary_env()
-
-            cloudinary.config(
-
-                cloud_name=_cname,
-
-                api_key=_ckey,
-
-                api_secret=_csecret,
-
-                secure=True,
-
-            )
-
-            _signed, _ = cloudinary.utils.cloudinary_url(
-
-                _pid, resource_type="image", format="pdf",
-
-                sign_url=True, secure=True,
-
-            )
-
-            if _signed:
-
-                result["cloudinary_url"] = _signed
-
-    except Exception:
-
-        pass
+    result["has_file"] = bool(str(result.get("public_id") or ""))
 
     return result
 
@@ -3577,6 +3536,60 @@ def health():
 # LIST BILLS
 
 # --------------------------------------------------
+
+
+@app.get("/api/bills/{bill_id}/file")
+def bill_file(bill_id: int, request: Request):
+    """Stream the bill's original file through Raseed itself.
+
+    Cloudinary delivery of the stored PDFs is blocked on this
+    account (401 "deny or ACL failure") — even signed delivery URLs
+    are refused — so the frontend never links to Cloudinary. The
+    backend downloads the asset with a signed API call, which the
+    account accepts, and serves the bytes itself.
+    """
+    owner = current_owner(request)
+    if guest_blocked(owner):
+        raise HTTPException(status_code=404, detail="Bill not found")
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM bills WHERE id = ? AND owner_email = ?",
+            (bill_id, owner),
+        ).fetchone()
+        if not row or not row["public_id"]:
+            raise HTTPException(
+                status_code=404, detail="No file saved for this bill")
+        public_id = row["public_id"]
+        stored_url = row["cloudinary_url"] or ""
+        filename = row["original_filename"] or "bill"
+    configure_cloudinary()
+    if "/raw/upload/" in stored_url:
+        download_url = cloudinary.utils.private_download_url(
+            public_id, "", resource_type="raw")
+    else:
+        fmt = ""
+        for candidate in (stored_url.split("?")[0], filename):
+            tail = candidate.rsplit(".", 1)
+            if len(tail) == 2 and 0 < len(tail[1]) <= 5:
+                fmt = tail[1].lower()
+                break
+        download_url = cloudinary.utils.private_download_url(
+            public_id, fmt or "pdf", resource_type="image")
+    fetched = httpx.get(download_url, timeout=45, follow_redirects=True)
+    if fetched.status_code != 200:
+        raise HTTPException(
+            status_code=502, detail="Could not fetch the bill file")
+    media_type = (
+        "application/pdf"
+        if filename.lower().endswith(".pdf")
+        else fetched.headers.get("content-type") or "application/octet-stream"
+    )
+    safe_name = filename.replace('"', "")
+    return Response(
+        content=fetched.content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+    )
 
 @app.get("/api/bills")
 
