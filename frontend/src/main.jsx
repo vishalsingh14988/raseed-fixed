@@ -792,6 +792,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [showText, setShowText] = useState(false);
   const [form, setForm] = useState({ product: bill.product || "", seller: bill.seller || "", purchase_date: bill.purchase_date || "", amount: bill.amount ?? "", warranty_months: bill.warranty_months ?? 0, category: bill.category || "Other", invoice_no: bill.invoice_no || "", order_no: bill.order_no || "", warranty_lifetime: bill.warranty_lifetime ? 1 : 0 });
   function change(key, value) { setForm(old => ({ ...old, [key]: value })); }
   async function save() {
@@ -823,7 +824,12 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
       <div><small>WARRANTY DURATION</small><b>{bill.warranty_lifetime ? "Lifetime" : bill.warranty_months ? `${bill.warranty_months} months` : "Not specified"}</b></div><div><small>WARRANTY ENDS</small><b>{bill.warranty_lifetime ? "Never (lifetime)" : formatDate(bill.warranty_end)}</b></div>
       <div><small>INVOICE NUMBER</small><b>{bill.invoice_no || "—"}</b></div><div><small>ORDER NUMBER</small><b>{bill.order_no || "—"}</b></div>
     </div>}
-    {bill.cloudinary_url && <a className="file-link" href={bill.cloudinary_url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Open original bill</a>}
+    {bill.cloudinary_url
+      ? <a className="file-link" href={bill.cloudinary_url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> View original bill</a>
+      : bill.extracted_text
+        ? <button className="file-link as-button" onClick={() => setShowText(v => !v)}><FileText size={16} /> {showText ? "Hide bill text" : "View original bill"}</button>
+        : <p className="no-file-note">No original file was saved for this bill — it was imported from the email's text.</p>}
+    {showText && !bill.cloudinary_url && bill.extracted_text && <pre className="bill-text-view">{bill.extracted_text}</pre>}
     {error && <div className="inline-error">{error}</div>}
     <div className="modal-foot"><button className="danger-button" onClick={() => onDelete(bill)}><Trash2 size={15} /> Delete</button><span className="modal-spacer" />
       {editing && <button className="secondary-button" onClick={() => setEditing(false)}>Cancel</button>}
