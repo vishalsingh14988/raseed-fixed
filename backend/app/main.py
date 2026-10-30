@@ -1960,9 +1960,61 @@ def _ai_read_pdf(data: bytes) -> dict:
     return {}
 
 
+
+_CSS_PROPS = {
+    "font-family", "font-size", "font-weight", "font-style", "line-height",
+    "color", "background", "background-color", "margin", "margin-top",
+    "margin-bottom", "margin-left", "margin-right", "padding",
+    "padding-top", "padding-bottom", "padding-left", "padding-right",
+    "border", "border-top", "border-bottom", "border-left", "border-right",
+    "border-radius", "width", "height", "max-width", "min-width",
+    "display", "text-align", "text-decoration", "vertical-align",
+    "letter-spacing", "white-space", "word-break", "overflow",
+    "position", "top", "left", "right", "bottom", "float", "clear",
+}
+
+def _clean_display_text(text):
+    """Bill text saved from HTML emails can carry the email's CSS
+    (style blocks whose tags were stripped, leaving lines like
+    'font-family: ...;'). Remove those lines so the bill reads like
+    a bill. Conservative: a line is dropped only when it is a known
+    CSS property declaration, a brace, a bare HTML-tag selector, or
+    a selector line opening a CSS block."""
+    if not text:
+        return text
+    tags = {"html", "body", "div", "span", "table", "tr", "td", "th",
+            "thead", "tbody", "p", "a", "img", "ul", "ol", "li", "h1",
+            "h2", "h3", "h4", "h5", "h6", "head", "style", "link",
+            "meta", "br", "hr", "form", "input", "button", "select",
+            "option", "label", "section", "article", "header",
+            "footer", "nav", "main", "strong", "b", "i", "em",
+            "small", "center", "font"}
+    out = []
+    for ln in text.split("\n"):
+        s = ln.strip()
+        if s in ("{", "}"):
+            continue
+        m = re.match(r"^([a-zA-Z-]+)\s*:\s*[^:;]+;\s*$", s)
+        if m and (m.group(1).lower() in _CSS_PROPS or "-" in m.group(1)):
+            continue
+        m = re.match(r"^([.#]?)([a-zA-Z][\w-]*)\s*,?$", s)
+        if m and (m.group(1) or m.group(2).lower() in tags):
+            continue
+        if s.endswith("{") and len(s) < 100 and re.match(
+                r"^[@.#a-zA-Z][\w\s.,#:>+~*()\[\]='\"-]*\{$", s):
+            continue
+        out.append(ln)
+    cleaned = re.sub(r"\n\s*\n+", "\n", "\n".join(out)).strip()
+    return cleaned or text
+
 def row_to_dict(row):
 
     result = dict(row)
+
+    if result.get("extracted_text"):
+
+        result["extracted_text"] = _clean_display_text(
+            result["extracted_text"])
 
     # Self-repair of future purchase dates: bills imported before the
     # future-date guard existed can carry a renewal/next-billing date
@@ -2836,6 +2888,9 @@ def _decode_gmail_body(payload):
             except Exception:
                 text = ""
             if mime == "text/html":
+                text = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ",
+                              text, flags=re.IGNORECASE | re.DOTALL)
+                text = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
                 text = re.sub(r"<(br|/p|/div|/tr)[^>]*>", "\n", text,
                               flags=re.IGNORECASE)
                 text = re.sub(r"<[^>]+>", " ", text)
