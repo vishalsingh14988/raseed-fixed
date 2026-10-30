@@ -799,3 +799,11 @@ button.upload-card:hover{background:#faf9ff}
    INPUT itself — that was the purple rectangle around the search box.
    The search input never draws it; other controls keep their ring. */
 .searchbox input:focus-visible { outline: none; }
+
+/* Spending chart: the card lists the top 4; See more opens the full chart. */
+.see-more-btn { margin-top: 12px; border: 0; background: transparent; color: #6C5CE7; font: 700 12.5px 'DM Sans', sans-serif; cursor: pointer; padding: 2px 0; }
+.see-more-btn:hover { text-decoration: underline; }
+.spending-modal { width: min(680px, 100%); }
+.spending-modal-body { display: flex; gap: 26px; align-items: center; flex-wrap: wrap; }
+.spending-modal .donut { width: 198px; height: 198px; flex-shrink: 0; }
+.donut-legend.full { flex: 1; min-width: 230px; max-height: 290px; overflow-y: auto; padding-right: 6px; }

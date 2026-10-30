@@ -164,6 +164,7 @@ function App() {
   const [error, setError] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedBill, setSelectedBill] = useState(null);
+  const [spendingOpen, setSpendingOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [activeNav, setActiveNav] = useState("Home");
   const [dark, setDark] = useState(false);
@@ -190,11 +191,11 @@ function App() {
   // over a bill popup must move the popup, never the list under it.
   const profilePopupOpen = Boolean(auth?.connected && !auth.profile_complete);
   useEffect(() => {
-    if (!(selectedBill || uploadOpen || profilePopupOpen)) return;
+    if (!(selectedBill || uploadOpen || profilePopupOpen || spendingOpen)) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = prev; };
-  }, [selectedBill, uploadOpen, profilePopupOpen]);
+  }, [selectedBill, uploadOpen, profilePopupOpen, spendingOpen]);
 
   async function loadBills() {
     setLoading(true);
@@ -474,11 +475,11 @@ function App() {
       const ax = a.warranty_lifetime ? 0 : ea !== null && ea < 0 ? 1 : 0, bx = b.warranty_lifetime ? 0 : eb !== null && eb < 0 ? 1 : 0;
       return ax - bx || String(a.warranty_end || "9999").localeCompare(String(b.warranty_end || "9999"));
     }).slice(0, 3), [summaryBills, bills]);
-  const DONUT_COLORS = ["#6d4aff", "#fb7185", "#38bdf8", "#c4b5fd", "#fbbf24", "#34d399"];
+  const DONUT_COLORS = ["#6d4aff", "#fb7185", "#38bdf8", "#c4b5fd", "#fbbf24", "#34d399", "#f97316", "#f472b6", "#a3e635", "#94a3b8", "#2dd4bf", "#e879f9", "#facc15"];
   const spending = useMemo(() => {
     const byCat = {};
     (summaryBills.length ? summaryBills : bills).forEach(b => { const c = b.category || "Other"; byCat[c] = (byCat[c] || 0) + (Number(b.amount) || 0); });
-    return Object.entries(byCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    return Object.entries(byCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
   }, [summaryBills, bills]);
   const donutGradient = useMemo(() => {
     const total = spending.reduce((s, [, v]) => s + v, 0);
@@ -612,7 +613,8 @@ function App() {
                 <div className="panel-heading"><div><h2>Your Spending</h2></div><span className="rail-select">All time</span></div>
                 {spending.length === 0 ? <p className="rail-empty">No spending yet — add bills and your spending chart will appear here.</p>
                   : <div className="donut-wrap"><div className="donut" style={{ background: donutGradient }}><div className="donut-hole"><b>{money(counts.totalSpent || null)}</b><span>Total</span></div></div>
-                    <div className="donut-legend">{spending.map(([cat, amt], i) => <div className="lrow" key={cat}><i style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} /><span className="lrow-name">{cat}</span><span className="lrow-pct">{counts.totalSpent ? Math.round((amt / counts.totalSpent) * 100) : 0}%</span><b>{money(amt)}</b></div>)}</div></div>}
+                    <div className="donut-legend">{spending.slice(0, 4).map(([cat, amt], i) => <div className="lrow" key={cat}><i style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} /><span className="lrow-name">{cat}</span><span className="lrow-pct">{counts.totalSpent ? Math.round((amt / counts.totalSpent) * 100) : 0}%</span><b>{money(amt)}</b></div>)}</div></div>}
+                {spending.length > 4 && <button className="see-more-btn" onClick={() => setSpendingOpen(true)}>See more · {spending.length - 4} more {spending.length - 4 === 1 ? "category" : "categories"}</button>}
               </section>
             </div>
           </div>
@@ -698,6 +700,13 @@ function App() {
       )}
       {uploadOpen && <UploadModal onClose={() => setUploadOpen(false)} onUpload={uploadFile} />}
       {selectedBill && <BillModal bill={selectedBill} onClose={() => setSelectedBill(null)} onDelete={removeBill} onSave={updateBill} />}
+      {spendingOpen && <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && setSpendingOpen(false)}><div className="modal spending-modal">
+        <div className="modal-head"><div><div className="eyebrow">YOUR SPENDING</div><h2>All categories</h2><p>Every category in your vault, biggest first — nothing is hidden.</p></div><button className="icon-button" onClick={() => setSpendingOpen(false)}><X size={20} /></button></div>
+        <div className="spending-modal-body">
+          <div className="donut" style={{ background: donutGradient }}><div className="donut-hole"><b>{money(counts.totalSpent || null)}</b><span>Total</span></div></div>
+          <div className="donut-legend full">{spending.map(([cat, amt], i) => <div className="lrow" key={cat}><i style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} /><span className="lrow-name">{cat}</span><span className="lrow-pct">{counts.totalSpent ? Math.round((amt / counts.totalSpent) * 100) : 0}%</span><b>{money(amt)}</b></div>)}</div>
+        </div>
+      </div></div>}
     </div>
   );
 }
