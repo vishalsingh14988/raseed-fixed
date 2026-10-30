@@ -1201,7 +1201,8 @@ def enrich_company(seller, ai_fields=None) -> dict:
 # already stored as "Other" (no re-import needed).
 BILL_CATEGORIES = (
     "Food", "Travel", "Electronics", "Fashion", "Home & Kitchen",
-    "Appliances", "Furniture", "Personal care", "Other",
+    "Appliances", "Furniture", "Personal care", "Education", "Health",
+    "Entertainment", "Bills & Utilities", "Other",
 )
 
 # Sellers whose range is basically a single category. Amazon and
@@ -1225,7 +1226,6 @@ SELLER_CATEGORY = {
     "irctc": "Travel",
     "makemytrip": "Travel",
     "make my trip": "Travel",
-    "croma": "Electronics",
     "samsung": "Electronics",
     "oneplus": "Electronics",
     "one plus": "Electronics",
@@ -1233,13 +1233,22 @@ SELLER_CATEGORY = {
     "xiaomi": "Electronics",
     "mi": "Electronics",
     "boat": "Electronics",
-    "reliance digital": "Electronics",
-    "vijay sales": "Electronics",
     "ajio": "Fashion",
     "myntra": "Fashion",
     "decathlon": "Fashion",
     "ikea": "Furniture",
     "nykaa": "Personal care",
+    "pharmeasy": "Health",
+    "netmeds": "Health",
+    "1mg": "Health",
+    "practo": "Health",
+    "bookmyshow": "Entertainment",
+    "netflix": "Entertainment",
+    "spotify": "Entertainment",
+    "google play": "Entertainment",
+    "unacademy": "Education",
+    "byjus": "Education",
+    "vedantu": "Education",
 }
 
 
@@ -1273,6 +1282,21 @@ _CATEGORY_KEYWORDS = (
         "gulab jamun", "snacks", "grocery", "groceries", "vegetables",
         "milk",
     )),
+    ("Education", (
+        "university", "college", "school", "hostel", "tuition",
+        "institute", "academy", "semester", "examination fee",
+        "course fee", "coaching",
+    )),
+    ("Health", (
+        "hospital", "clinic", "pharmacy", "medical", "medicine",
+        "medicines", "diagnostic", "diagnostics", "laboratory",
+        "pathology", "dental", "surgery", "consultation",
+    )),
+    ("Bills & Utilities", (
+        "electricity", "electric bill", "broadband", "internet bill",
+        "recharge", "postpaid", "water bill", "gas bill", "dth",
+        "utility bill", "mobile bill", "phone bill",
+    )),
     ("Appliances", (
         "washing machine", "refrigerator", "fridge", "microwave",
         "air conditioner", "ac", "cooler", "geyser", "mixer grinder",
@@ -1299,6 +1323,11 @@ _CATEGORY_KEYWORDS = (
     ("Personal care", (
         "shampoo", "soap", "cream", "lipstick", "makeup", "skincare",
         "perfume", "toothpaste",
+    )),
+    ("Entertainment", (
+        "google play", "netflix", "spotify", "prime video", "hotstar",
+        "bookmyshow", "movie", "movies", "game", "games",
+        "subscription", "app store",
     )),
     ("Travel", (
         "ride", "taxi", "cab", "flight", "air ticket", "train ticket",
@@ -1339,6 +1368,90 @@ def infer_category(seller, product, text, ai_fields=None) -> str:
     ]).lower()
     haystack = f" {re.sub(r'[^a-z0-9]+', ' ', haystack)} "
     return _keyword_category(haystack) or "Other"
+
+
+def ai_classify_category(seller, product, text) -> str:
+    """Ask the AI reader to categorise a bill the rules could not.
+
+    This is the "Raseed AI decides by itself" path: it runs only when
+    the deterministic rules land on "Other". It sends a short
+    text-only prompt and accepts only an exact category from
+    BILL_CATEGORIES. Best-effort: any failure (no API key, timeout,
+    odd reply) returns "" and the bill simply stays "Other".
+    """
+    api_key = _gemini_api_key()
+    if not api_key:
+        return ""
+    excerpt = " ".join([
+        str(seller or ""), str(product or ""), str(text or "")[:1500],
+    ]).strip()
+    if len(excerpt) < 8:
+        return ""
+    base = os.getenv(
+        "GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta"
+    ).rstrip("/")
+    models = []
+    for candidate in [os.getenv("GEMINI_MODEL", "")] + list(AI_READER_MODELS):
+        if candidate and candidate not in models:
+            models.append(candidate)
+    prompt = (
+        "You categorise Indian purchase bills. Reply with ONLY a JSON "
+        "object {\"category\": \"...\"} choosing exactly one of: "
+        + ", ".join(BILL_CATEGORIES) + ". "
+        "Guidance: college/university/school fees and hostel charges "
+        "are Education; medicines, hospitals and clinics are Health; "
+        "apps, subscriptions and movies are Entertainment; electricity, "
+        "internet, phone recharge and similar utility payments are "
+        "Bills & Utilities. Choose Other only if nothing fits.\n\n"
+        f"Bill details: {excerpt}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0, "responseMimeType": "application/json",
+        },
+    }
+    for model in models[:2]:
+        try:
+            with httpx.Client(timeout=15.0, trust_env=False) as client:
+                response = client.post(
+                    f"{base}/models/{model}:generateContent",
+                    headers={
+                        "x-goog-api-key": api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            if response.status_code != 200:
+                continue
+            body = response.json()
+            parts = body["candidates"][0]["content"]["parts"]
+            raw = "".join(part.get("text", "") for part in parts)
+            category = _parse_ai_json(raw).get("category")
+            if isinstance(category, str) \
+                    and category.strip() in BILL_CATEGORIES \
+                    and category.strip() != "Other":
+                return category.strip()
+            # The model answered but had no better idea: do not burn
+            # another model on the same question.
+            return ""
+        except Exception:
+            continue
+    return ""
+
+
+def categorize_bill(seller, product, text, ai_fields=None) -> str:
+    """Category for a newly saved bill.
+
+    Deterministic rules first (instant, free, predictable); when they
+    can only say "Other", the AI reader takes a look at the bill and
+    decides by itself. Used at save time only — read-time backfill in
+    row_to_dict stays rule-based so listing bills never waits on AI.
+    """
+    category = infer_category(seller, product, text, ai_fields)
+    if category != "Other":
+        return category
+    return ai_classify_category(seller, product, text) or "Other"
 
 
 def _filename_product(filename: str) -> str:
@@ -1660,7 +1773,7 @@ AI_READER_PROMPT = (
     "\"warranty_lifetime\": true if a lifetime warranty is stated, else false; "
     "\"seller_domain\": the seller/company's official website domain (e.g. \"croma.com\"), or \"\" if you do not know it; "
     "\"company_about\": one short line saying what the company/seller does (e.g. \"Electronics retail\"), or \"\"; "
-    "\"category\": the purchase category, exactly one of \"Food\", \"Travel\", \"Electronics\", \"Fashion\", \"Home & Kitchen\", \"Appliances\", \"Furniture\", \"Personal care\", \"Other\". "
+    "\"category\": the purchase category, exactly one of \"Food\", \"Travel\", \"Electronics\", \"Fashion\", \"Home & Kitchen\", \"Appliances\", \"Furniture\", \"Personal care\", \"Education\", \"Health\", \"Entertainment\", \"Bills & Utilities\", \"Other\". Guidance: college, university or school fees and hostel charges are Education; medicines, hospitals and clinics are Health; apps, games, subscriptions and movies are Entertainment; electricity, internet, phone recharge and similar utility payments are Bills & Utilities. "
     "Never guess a value you cannot read; use \"\" or null instead."
 )
 
@@ -2944,7 +3057,7 @@ def _perform_gmail_scan(email, report=None):
                         fields.get("seller")
                         or _gmail_seller_fallback(sender))
                     body_company = enrich_company(body_seller, fields)
-                    body_category = infer_category(
+                    body_category = categorize_bill(
                         body_seller, product, body_text, fields)
                     with db() as conn:
                         conn.execute(
@@ -3161,7 +3274,7 @@ def _perform_gmail_scan(email, report=None):
 
                         gmail_company = enrich_company(
                             fields.get("seller", ""), fields)
-                        gmail_category = infer_category(
+                        gmail_category = categorize_bill(
                             fields.get("seller", ""),
                             fields.get("product") or subject[:100],
                             extracted, fields)
@@ -3765,7 +3878,7 @@ async def upload_bill(
                 and chosen_category in BILL_CATEGORIES:
             bill_category = chosen_category
         else:
-            bill_category = infer_category(seller, product, text, fields)
+            bill_category = categorize_bill(seller, product, text, fields)
 
         # Prefer an expiry date printed on the invoice, otherwise calculate it.
         warranty_end = fields.get("warranty_end", "") or ""
@@ -4005,7 +4118,7 @@ def update_bill(
 
                 "seller" in updates or "product" in updates):
 
-            values["category"] = infer_category(
+            values["category"] = categorize_bill(
 
                 values.get("seller") or "",
 
