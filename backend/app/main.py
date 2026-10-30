@@ -1971,6 +1971,8 @@ _CSS_PROPS = {
     "display", "text-align", "text-decoration", "vertical-align",
     "letter-spacing", "white-space", "word-break", "overflow",
     "position", "top", "left", "right", "bottom", "float", "clear",
+    "content", "box-sizing", "box-shadow", "cursor", "visibility",
+    "opacity", "z-index", "text-transform", "list-style", "outline",
 }
 
 def _clean_display_text(text):
@@ -2003,6 +2005,26 @@ def _clean_display_text(text):
         if s.endswith("{") and len(s) < 100 and re.match(
                 r"^[@.#a-zA-Z][\w\s.,#:>+~*()\[\]='\"-]*\{$", s):
             continue
+        core = s[:-1].strip() if s.endswith((",", "{")) else s
+        if core != s:
+            ok, marked = True, False
+            for piece in core.split(","):
+                for word in piece.split():
+                    if word in (">", "+", "~", "*"):
+                        marked = marked or word == "*"
+                        continue
+                    if not re.match(
+                            r"^[.#*]?[a-zA-Z][\w-]*(:[a-z-]+(\([^)]*\))?)?$",
+                            word):
+                        ok = False
+                        break
+                    if (":" in word or word.startswith((".", "#"))
+                            or word.strip(".:#").lower() in tags):
+                        marked = True
+                if not ok:
+                    break
+            if ok and marked:
+                continue
         out.append(ln)
     cleaned = re.sub(r"\n\s*\n+", "\n", "\n".join(out)).strip()
     return cleaned or text
