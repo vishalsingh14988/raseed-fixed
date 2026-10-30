@@ -786,3 +786,11 @@ button.upload-card:hover{background:#faf9ff}
 
 @media(max-width:1180px){.home-grid{grid-template-columns:1fr}.home-right{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:stretch}.upload-card{min-height:0}}
 @media(max-width:800px){.hero-art{display:none}.hero-copy h1{font-size:25px}.home-row{grid-template-columns:47px minmax(0,1fr) 18px}.home-row .bill-date{grid-column:2}.home-row .bill-amt{grid-column:2;text-align:left}.home-row .cat-chip{display:none}.home-row .row-arrow{grid-column:3;grid-row:1}.sync-gmail-btn{padding:8px 12px 8px 8px;font-size:12.5px}.donut-wrap{flex-direction:column;align-items:flex-start}}
+
+/* --- Popup scroll + calmer search focus (30 Oct) --- */
+/* While a popup is open the backdrop must not chain-scroll the page. */
+.modal-backdrop { overscroll-behavior: contain; }
+.modal { overscroll-behavior: contain; }
+/* No hard purple rectangle around the search box on focus. */
+.searchbox:focus-within { border-color: #E2E8F0; box-shadow: none; }
+.app-shell.dark .searchbox:focus-within { border-color: #262F4D; box-shadow: none; }

@@ -148,10 +148,11 @@ function daysLeft(end) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   return Math.round((d - today) / 86400000);
 }
+const CATEGORIES = ["Other", "Food", "Travel", "Electronics", "Fashion", "Home & Kitchen", "Appliances", "Furniture", "Personal care", "Education", "Health", "Entertainment", "Bills & Utilities"];
 const CAT_COLORS = {
   "Food": ["#ffeef0", "#e11d48"], "Travel": ["#e0f2fe", "#0284c7"], "Electronics": ["#efeaff", "#6d4aff"],
   "Fashion": ["#e0f2fe", "#2563eb"], "Home & Kitchen": ["#fef3c7", "#b45309"], "Appliances": ["#dcfce7", "#15803d"],
-  "Furniture": ["#ffedd5", "#c2410c"], "Personal care": ["#fce7f3", "#be185d"], "Other": ["#f1eefc", "#6d4aff"],
+  "Furniture": ["#ffedd5", "#c2410c"], "Personal care": ["#fce7f3", "#be185d"], "Education": ["#e0e7ff", "#4338ca"], "Health": ["#ccfbf1", "#0f766e"], "Entertainment": ["#fae8ff", "#a21caf"], "Bills & Utilities": ["#fef9c3", "#a16207"], "Other": ["#f1eefc", "#6d4aff"],
 };
 
 function App() {
@@ -184,6 +185,16 @@ function App() {
   // here made it look as if the user was signed in, then "flip" to
   // Guest once the real answer arrived.
   const firstName = auth?.profile?.name ? auth.profile.name.split(" ")[0] : guest ? "Guest" : "friend";
+
+  // While any popup is open, lock the page behind it: scrolling
+  // over a bill popup must move the popup, never the list under it.
+  const profilePopupOpen = Boolean(auth?.connected && !auth.profile_complete);
+  useEffect(() => {
+    if (!(selectedBill || uploadOpen || profilePopupOpen)) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [selectedBill, uploadOpen, profilePopupOpen]);
 
   async function loadBills() {
     setLoading(true);
@@ -760,7 +771,7 @@ function UploadModal({ onClose, onUpload }) {
       <label>Purchase date<input type="date" value={form.purchaseDate} onChange={e => change("purchaseDate", e.target.value)} /></label>
       <label>Amount (₹)<input type="number" min="0" step="0.01" value={form.amount} onChange={e => change("amount", e.target.value)} placeholder="e.g. 2499" /></label>
       <label>Warranty duration<select value={form.warrantyMonths} onChange={e => change("warrantyMonths", e.target.value)}><option value="0">No warranty / unknown</option><option value="3">3 months</option><option value="6">6 months</option><option value="12">1 year</option><option value="24">2 years</option><option value="36">3 years</option><option value="60">5 years</option><option value="120">10 years</option></select></label>
-      <label>Category<select value={form.category} onChange={e => change("category", e.target.value)}>{["Other","Electronics","Home & Kitchen","Fashion","Appliances","Furniture","Personal care","Travel"].map(c => <option key={c}>{c}</option>)}</select></label>
+      <label>Category<select value={form.category} onChange={e => change("category", e.target.value)}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></label>
     </div>
     <p className="ocr-note"><ShieldCheck size={15} /> OCR reads your bill (in your browser for photos, on the server for PDFs) and fills in product, seller, date and amount. Check the saved details against your original bill.</p>
     {error && <div className="inline-error">{error}</div>}
