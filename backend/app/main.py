@@ -2145,6 +2145,49 @@ def row_to_dict(row):
 
     result["source"] = "gmail" if str(source_key).startswith("gmail:") else "scan"
 
+    # Cloudinary blocks UNSIGNED delivery of PDFs stored as image
+    # resources (clicking the bill file returned 401 "deny or ACL
+    # failure"). A signed URL is allowed, so hand the frontend one
+    # for those older bills. New PDF uploads are stored as raw
+    # resources instead, which deliver publicly.
+    try:
+
+        _url = str(result.get("cloudinary_url") or "")
+
+        _pid = str(result.get("public_id") or "")
+
+        if _pid and "/image/upload/" in _url and _url.lower().split("?")[0].endswith(".pdf") and all(_cloudinary_env()):
+
+            _cname, _ckey, _csecret = _cloudinary_env()
+
+            cloudinary.config(
+
+                cloud_name=_cname,
+
+                api_key=_ckey,
+
+                api_secret=_csecret,
+
+                secure=True,
+
+            )
+
+            _signed, _ = cloudinary.utils.cloudinary_url(
+
+                _pid, resource_type="image", format="pdf",
+
+                sign_url=True, secure=True,
+
+            )
+
+            if _signed:
+
+                result["cloudinary_url"] = _signed
+
+    except Exception:
+
+        pass
+
     return result
 
 class BillUpdate(BaseModel):
@@ -3283,7 +3326,7 @@ def _perform_gmail_scan(email, report=None):
                         uploaded = cloudinary.uploader.upload(
                             temp_path,
                             folder="billproof/bills",
-                            resource_type="auto",
+                            resource_type=("raw" if str(filename).lower().endswith(".pdf") else "auto"),
                             use_filename=True,
                             unique_filename=True,
                             overwrite=False,
@@ -3855,7 +3898,7 @@ async def upload_bill(
 
             folder="billproof/bills",
 
-            resource_type="auto",
+            resource_type=("raw" if str(filename).lower().endswith(".pdf") else "auto"),
 
             use_filename=True,
 
@@ -4252,23 +4295,25 @@ def delete_bill(
 
                 configure_cloudinary()
 
-                resource_type = (
+                _types = (
 
-                    "raw"
+                    ["image", "raw"]
 
                     if row["original_filename"].lower().endswith(".pdf")
 
-                    else "image"
+                    else ["image"]
 
                 )
 
-                cloudinary.uploader.destroy(
+                for _rtype in _types:
 
-                    row["public_id"],
+                    cloudinary.uploader.destroy(
 
-                    resource_type=resource_type,
+                        row["public_id"],
 
-                )
+                        resource_type=_rtype,
+
+                    )
 
             except Exception:
 
