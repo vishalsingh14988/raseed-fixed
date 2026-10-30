@@ -799,7 +799,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
     setFileBusy(true); setError("");
     try {
       const res = await apiFetch(`/api/bills/${bill.id}/file`);
-      if (!res.ok) throw new Error("Could not open the bill file. Please try again.");
+      if (!res.ok) { let msg = "Could not open the bill file. Please try again."; try { const d = await res.json(); if (d && d.detail) msg = `Could not open the bill file — ${d.detail}`; } catch { /* keep generic */ } throw new Error(msg); }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       if (win) win.location = url; else window.location = url;
