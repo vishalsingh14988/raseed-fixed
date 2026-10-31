@@ -676,7 +676,7 @@ function App() {
               <div className="agent-card">
                 <div className="agent-head"><Sparkles size={17} /><b>Ask Raseed</b><span>Your bill agent — it searches, totals and checks your vault for you.</span></div>
                 <form className="agent-form" onSubmit={askAgent}>
-                  <input value={agentQ} onChange={e => setAgentQ(e.target.value)} placeholder="Try: How much did I spend on food? · Which bills need review? · Check all my bills" />
+                  <input value={agentQ} onChange={e => { setAgentQ(e.target.value); if (agentAnswer || agentBills.length) { setAgentAnswer(""); setAgentBills([]); } }} placeholder="Try: How much did I spend on food? · Which bills need review? · Check all my bills" />
                   <button className="primary-button" type="submit" disabled={agentBusy}>{agentBusy ? "Thinking\u2026" : "Ask"}</button>
                 </form>
                 {agentAnswer && <div className="agent-answer">{agentAnswer}</div>}
