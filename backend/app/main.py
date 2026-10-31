@@ -2239,6 +2239,17 @@ def _duplicate_match(conn, owner, seller, product, amount,
             if new_refs & old_refs:
                 return "ref", row
         if fuzzy_key and fuzzy_hit is None:
+            # Proven distinct: both bills carry an invoice (or
+            # order) number and the numbers differ — never a
+            # duplicate, however similar the rest looks.
+            inv_conflict = (
+                _norm_ref(invoice_no) and _norm_ref(row["invoice_no"])
+                and _norm_ref(invoice_no) != _norm_ref(row["invoice_no"]))
+            ord_conflict = (
+                _norm_ref(order_no) and _norm_ref(row["order_no"])
+                and _norm_ref(order_no) != _norm_ref(row["order_no"]))
+            if inv_conflict or ord_conflict:
+                continue
             if row["amount"] is not None and row["purchase_date"]:
                 try:
                     key = (
@@ -5126,28 +5137,9 @@ def _agent_tool_check_all(owner):
         changed = 0
         recategorised = 0
         flagged = 0
-        _groups = {}
-        for _r in rows:
-            _d = dict(_r)
-            for _ref in {_norm_ref(_d.get("invoice_no")),
-                         _norm_ref(_d.get("order_no"))} - {""}:
-                _groups.setdefault(
-                    "ref:" + _ref, []).append(_d["id"])
-            if _d.get("amount") is not None and _d.get("purchase_date"):
-                try:
-                    _fk = (
-                        "fuzzy:"
-                        + _seller_key(
-                            _d.get("seller")
-                            or _d.get("product") or "")
-                        + "|" + str(round(float(_d["amount"]), 2))
-                        + "|" + str(_d["purchase_date"]))
-                    _groups.setdefault(_fk, []).append(_d["id"])
-                except (TypeError, ValueError):
-                    pass
         _dup_ids = {
-            _i for _ids in _groups.values() if len(_ids) > 1
-            for _i in _ids}
+            _b["id"] for _g in _duplicate_groups(
+                [dict(_r) for _r in rows]) for _b in _g}
         for row in rows:
             data = dict(row)
             problems = _review_problems(
@@ -5227,32 +5219,109 @@ def _agent_tool_warranties(bills, message, days=None):
     return "\n".join(lines), [bill for _, bill in expiring[:200]]
 
 
-def _agent_tool_duplicates(bills):
-    groups = {}
+def _dup_product_key(bill):
+    return re.sub(
+        r"[^a-z0-9]+", " ",
+        str(bill.get("product") or "").lower()).strip()[:40]
+
+
+def _duplicate_groups(bills):
+    """Groups of bills that look like the same purchase, strict
+    enough not to swallow legitimate repeat purchases:
+
+    - Ref groups: bills sharing a normalised invoice/order number
+      (length >= 4), unioned across both number fields.
+    - Field groups (bills not already in a ref group): same
+      company + amount + purchase date + item, and the purchase
+      date must be real — dateless bills never group. A field
+      group carrying two different invoice numbers is split,
+      because different invoice numbers prove distinct purchases
+      (e.g. same-fare Rapido rides)."""
+    parent = list(range(len(bills)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    by_ref = {}
+    for i, bill in enumerate(bills):
+        for raw in (bill.get("invoice_no"), bill.get("order_no")):
+            ref = _norm_ref(raw)
+            if len(ref) >= 4:
+                by_ref.setdefault(ref, []).append(i)
+    for idxs in by_ref.values():
+        for j in idxs[1:]:
+            union(idxs[0], j)
+    sets = {}
+    for i in range(len(bills)):
+        sets.setdefault(find(i), []).append(i)
+    groups = []
+    grouped_ids = set()
+    for idxs in sets.values():
+        if len(idxs) > 1:
+            groups.append([bills[i] for i in idxs])
+            grouped_ids.update(id(bills[i]) for i in idxs)
+
+    field_groups = {}
     for bill in bills:
-        ref = bill.get("invoice_no") or bill.get("order_no") or ""
-        if ref:
-            groups.setdefault(("ref", ref), []).append(bill)
+        if id(bill) in grouped_ids:
+            continue
+        purchase_date = str(bill.get("purchase_date") or "")
+        if not purchase_date or not bill.get("amount"):
+            continue
+        try:
+            amount_key = round(float(bill["amount"]), 2)
+        except (TypeError, ValueError):
             continue
         key = (
-            "fields",
-            _seller_key(bill.get("seller")),
-            bill.get("amount"),
-            bill.get("purchase_date") or "",
+            _seller_key(bill.get("seller") or bill.get("product")
+                        or ""),
+            amount_key,
+            purchase_date,
+            _dup_product_key(bill),
         )
-        if bill.get("amount"):
-            groups.setdefault(key, []).append(bill)
-    duplicates = [
-        group for group in groups.values() if len(group) > 1
-    ]
+        if not key[0] or not key[3]:
+            continue
+        field_groups.setdefault(key, []).append(bill)
+    for group in field_groups.values():
+        if len(group) < 2:
+            continue
+        inv_values = {
+            _norm_ref(b.get("invoice_no")) for b in group} - {""}
+        if len(inv_values) > 1:
+            buckets = {}
+            for b in group:
+                buckets.setdefault(
+                    _norm_ref(b.get("invoice_no")), []).append(b)
+            for value, members in buckets.items():
+                if len(members) > 1:
+                    groups.append(members)
+        else:
+            groups.append(group)
+    return groups
+
+
+def _agent_tool_duplicates(bills):
+    duplicates = _duplicate_groups(bills)
     if not duplicates:
         return "I found no duplicate bills in your vault.", []
     flat = [bill for group in duplicates for bill in group]
     answer = (
         f"I found {len(duplicates)} possible duplicate set(s) "
-        f"covering {len(flat)} bills. I have not deleted anything "
-        "— open a bill and delete the extra copy yourself if it "
-        "really is a duplicate."
+        f"covering {len(flat)} bills. A set means bills sharing "
+        "an invoice/order number, or the same company, amount, "
+        "date and item. Bills with different invoice numbers are "
+        "never grouped, so repeat purchases like same-fare rides "
+        "stay separate. I have not deleted anything — open a bill "
+        "and delete the extra copy yourself if it really is a "
+        "duplicate."
     )
     return answer, flat[:200]
 
