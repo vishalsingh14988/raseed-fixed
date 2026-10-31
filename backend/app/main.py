@@ -508,6 +508,26 @@ def init_db():
 
             """)
 
+        if "needs_review" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN needs_review INTEGER
+
+            """)
+
+        if "review_reason" not in columns:
+
+            conn.execute("""
+
+                ALTER TABLE bills
+
+                ADD COLUMN review_reason TEXT
+
+            """)
+
         conn.execute("""
 
             CREATE TABLE IF NOT EXISTS gmail_connections (
@@ -523,6 +543,24 @@ def init_db():
                 scope TEXT DEFAULT '',
 
                 updated_at TEXT NOT NULL
+
+            )
+
+        """)
+
+        conn.execute("""
+
+            CREATE TABLE IF NOT EXISTS learned_rules (
+
+                owner_email TEXT NOT NULL,
+
+                seller_key TEXT NOT NULL,
+
+                category TEXT NOT NULL,
+
+                updated_at TEXT DEFAULT '',
+
+                PRIMARY KEY (owner_email, seller_key)
 
             )
 
@@ -1440,7 +1478,7 @@ def ai_classify_category(seller, product, text) -> str:
     return ""
 
 
-def categorize_bill(seller, product, text, ai_fields=None) -> str:
+def categorize_bill(seller, product, text, ai_fields=None, owner=None) -> str:
     """Category for a newly saved bill.
 
     Deterministic rules first (instant, free, predictable); when they
@@ -1448,6 +1486,10 @@ def categorize_bill(seller, product, text, ai_fields=None) -> str:
     decides by itself. Used at save time only — read-time backfill in
     row_to_dict stays rule-based so listing bills never waits on AI.
     """
+    if owner:
+        learned = _learned_category(owner, seller)
+        if learned:
+            return learned
     category = infer_category(seller, product, text, ai_fields)
     if category != "Other":
         return category
@@ -2029,6 +2071,130 @@ def _clean_display_text(text):
     cleaned = re.sub(r"\n\s*\n+", "\n", "\n".join(out)).strip()
     return cleaned or text
 
+
+# --------------------------------------------------
+# AGENT V1 — verify, remember, report
+#
+# The agent's first tools. Every newly saved bill is assessed the
+# moment it is stored: when a field could not be found, or the
+# printed total disagrees with the saved amount, the bill is
+# flagged needs_review WITH the reason, instead of the old silent
+# failure (blank bills nobody was told about). Category
+# corrections a user makes by hand are remembered as personal
+# rules for that seller, so the same fix never has to be repeated.
+# --------------------------------------------------
+
+_LEARN_SKIP_SELLERS = {"amazon", "flipkart"}
+
+
+def _seller_key(seller) -> str:
+    """Normalised seller identity used for learned rules."""
+    return re.sub(r"[^a-z0-9]+", " ", str(seller or "").lower()).strip()
+
+
+def _learned_category(owner, seller):
+    """The category this owner taught Raseed for this seller, if any."""
+    key = _seller_key(seller)
+    if not owner or not key or key in _LEARN_SKIP_SELLERS:
+        return ""
+    try:
+        with db() as conn:
+            row = conn.execute(
+                "SELECT category FROM learned_rules"
+                " WHERE owner_email=? AND seller_key=?",
+                (owner, key),
+            ).fetchone()
+        return (row[0] if row else "") or ""
+    except Exception:
+        return ""
+
+
+def _save_learned_category(owner, seller, category):
+    """Remember: bills from this seller belong to this category."""
+    key = _seller_key(seller)
+    if not owner or not key or key in _LEARN_SKIP_SELLERS:
+        return
+    if category not in BILL_CATEGORIES:
+        return
+    try:
+        with db() as conn:
+            conn.execute(
+                """
+                INSERT INTO learned_rules
+                    (owner_email, seller_key, category, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(owner_email, seller_key)
+                DO UPDATE SET category=excluded.category,
+                              updated_at=excluded.updated_at
+                """,
+                (owner, key, category,
+                 datetime.utcnow().isoformat(timespec="seconds")),
+            )
+    except Exception:
+        pass
+
+
+_TOTAL_LABEL_PATTERN = re.compile(
+    r"(?:grand\s*total|net\s*payable(?:\s*amount)?"
+    r"|total\s*(?:invoice\s*)?value|amount\s*payable"
+    r"|total\s*amount|invoice\s*total|total)"
+    r"\s*[:\-]?\s*(?:\u20B9|rs\.?|inr)?\s*"
+    r"([0-9][0-9,]*\.?[0-9]*)",
+    re.IGNORECASE,
+)
+
+
+def _review_problems(product, seller, amount, purchase_date,
+                     extracted_text):
+    """Plain-language reasons this bill deserves a human look.
+
+    Conservative on purpose: a flag is raised only for things that
+    are actually broken (missing amount/date/seller, an impossible
+    date, or a printed total that disagrees with the saved amount),
+    never for mere uncertainty.
+    """
+    problems = []
+    if amount is None:
+        problems.append("Amount was not found on this bill")
+    elif amount <= 0:
+        problems.append("The saved amount looks wrong (Rs 0 or less)")
+    if not purchase_date:
+        problems.append("Purchase date was not found")
+    elif _is_future_date(str(purchase_date)):
+        problems.append("Purchase date is in the future")
+    if not str(seller or "").strip():
+        problems.append("The company/seller could not be identified")
+    if amount is not None and extracted_text:
+        try:
+            labelled = _TOTAL_LABEL_PATTERN.findall(
+                str(extracted_text))
+            if labelled:
+                printed_total = float(labelled[-1].replace(",", ""))
+                if printed_total > 0 and abs(printed_total - amount) > 1.0:
+                    problems.append(
+                        "The total printed on the bill (Rs "
+                        + f"{printed_total:,.2f}) does not match the "
+                        + f"saved amount (Rs {amount:,.2f})"
+                    )
+        except Exception:
+            pass
+    seen = set()
+    unique = []
+    for problem in problems:
+        if problem not in seen:
+            seen.add(problem)
+            unique.append(problem)
+    return unique
+
+
+def _assess_review(product, seller, amount, purchase_date,
+                   extracted_text):
+    """(needs_review, review_reason) for a bill about to be saved."""
+    problems = _review_problems(
+        product, seller, amount, purchase_date, extracted_text)
+    return (1 if problems else 0), "; ".join(problems)
+
+
 def row_to_dict(row):
 
     result = dict(row)
@@ -2221,6 +2387,38 @@ def row_to_dict(row):
 
     result["has_file"] = bool(str(result.get("public_id") or ""))
 
+    # Agent v1 needs-review: bills assessed at save time carry a
+    # stored verdict (review_reason is '' when assessed clean, and
+    # also when the owner has marked the bill correct). Bills saved
+    # before the agent existed have review_reason NULL and are
+    # assessed live here, so old blank bills get flagged without
+    # anyone re-importing them.
+    if result.get("review_reason") is not None:
+
+        result["needs_review"] = 1 if result.get("needs_review") else 0
+
+    else:
+
+        _problems = _review_problems(
+
+            result.get("product"),
+
+            result.get("seller"),
+
+            result.get("amount"),
+
+            result.get("purchase_date"),
+
+            result.get("extracted_text"),
+
+        )
+
+        result["needs_review"] = 1 if _problems else 0
+
+        result["review_reason"] = "; ".join(_problems)
+
+    result.setdefault("review_reason", "")
+
     return result
 
 class BillUpdate(BaseModel):
@@ -2242,6 +2440,8 @@ class BillUpdate(BaseModel):
     order_no: Optional[str] = None
 
     warranty_lifetime: Optional[int] = None
+
+    needs_review: Optional[int] = None
 
 # --------------------------------------------------
 
@@ -3137,7 +3337,8 @@ def _perform_gmail_scan(email, report=None):
                         or _gmail_seller_fallback(sender))
                     body_company = enrich_company(body_seller, fields)
                     body_category = categorize_bill(
-                        body_seller, product, body_text, fields)
+                        body_seller, product, body_text, fields,
+                        owner=email)
                     with db() as conn:
                         conn.execute(
                             """
@@ -3149,9 +3350,9 @@ def _perform_gmail_scan(email, report=None):
                                 cloudinary_url, public_id,
                                 original_filename, extracted_text,
                                 created_at, owner_email, source_key,
-                                logo_url, company_domain, company_about, received_date
+                                logo_url, company_domain, company_about, received_date, needs_review, review_reason
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 product,
@@ -3175,6 +3376,8 @@ def _perform_gmail_scan(email, report=None):
                                 body_company["company_domain"],
                                 body_company["company_about"],
                                 email_date,
+                                _assess_review(product, body_seller, amount, purchase_date_value, body_text)[0],
+                                _assess_review(product, body_seller, amount, purchase_date_value, body_text)[1],
                             ),
                         )
                     known_keys.add(source_key)
@@ -3356,7 +3559,7 @@ def _perform_gmail_scan(email, report=None):
                         gmail_category = categorize_bill(
                             fields.get("seller", ""),
                             fields.get("product") or subject[:100],
-                            extracted, fields)
+                            extracted, fields, owner=email)
 
                         configure_cloudinary()
                         uploaded = cloudinary.uploader.upload(
@@ -3379,9 +3582,9 @@ def _perform_gmail_scan(email, report=None):
                                     cloudinary_url, public_id,
                                     original_filename, extracted_text,
                                     created_at, owner_email, source_key,
-                                    logo_url, company_domain, company_about, received_date
+                                    logo_url, company_domain, company_about, received_date, needs_review, review_reason
                                 )
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     fields.get("product")
@@ -3408,6 +3611,8 @@ def _perform_gmail_scan(email, report=None):
                                     gmail_company["company_domain"],
                                     gmail_company["company_about"],
                                     email_date,
+                                    _assess_review(fields.get("product") or subject[:100], fields.get("seller", ""), gmail_amount, gmail_purchase_date, extracted)[0],
+                                    _assess_review(fields.get("product") or subject[:100], fields.get("seller", ""), gmail_amount, gmail_purchase_date, extracted)[1],
                                 ),
                             )
                         known_keys.add(source_key)
@@ -3859,6 +4064,36 @@ def list_bills(
 
         ]
 
+    elif status == "Needs Review":
+
+        bills = [
+
+            bill for bill in bills
+
+            if bill.get("needs_review")
+
+        ]
+
+    elif status == "Uploaded Bills":
+
+        bills = [
+
+            bill for bill in bills
+
+            if bill.get("source") != "gmail"
+
+        ]
+
+    elif status == "Mail Bills":
+
+        bills = [
+
+            bill for bill in bills
+
+            if bill.get("source") == "gmail"
+
+        ]
+
     return bills
 
 # --------------------------------------------------
@@ -4081,7 +4316,7 @@ async def upload_bill(
                 and chosen_category in BILL_CATEGORIES:
             bill_category = chosen_category
         else:
-            bill_category = categorize_bill(seller, product, text, fields)
+            bill_category = categorize_bill(seller, product, text, fields, owner=current_owner(request))
 
         # Prefer an expiry date printed on the invoice, otherwise calculate it.
         warranty_end = fields.get("warranty_end", "") or ""
@@ -4112,11 +4347,11 @@ async def upload_bill(
 
                     extracted_text, created_at, owner_email,
 
-                    logo_url, company_domain, company_about, received_date
+                    logo_url, company_domain, company_about, received_date, needs_review, review_reason
 
                 )
 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
                 """,
 
@@ -4161,6 +4396,10 @@ async def upload_bill(
                     company["company_about"],
 
                     datetime.utcnow().date().isoformat(),
+
+                    _assess_review(product, seller, amount, purchase_date, text)[0],
+
+                    _assess_review(product, seller, amount, purchase_date, text)[1],
 
                 ),
 
@@ -4231,6 +4470,8 @@ def update_bill(
             detail="Please login first.",
 
         )
+
+    learn_pair = None
 
     with db() as conn:
 
@@ -4329,7 +4570,53 @@ def update_bill(
 
                 values.get("extracted_text") or "",
 
+                owner=owner,
+
             )
+
+        # Agent v1 — remember a manual category correction as a
+        # personal rule for this seller (saved after this update).
+        if "category" in updates and updates.get("category") \
+                and str(updates.get("category")) != str(old["category"] or ""):
+
+            learn_pair = (
+
+                values.get("seller") or "",
+
+                str(updates["category"]),
+
+            )
+
+        # Agent v1 — needs-review verdict: a PATCH carrying ONLY
+        # needs_review=0 is the owner pressing "Mark as correct" and
+        # clears the flag; any other edit re-assesses the bill from
+        # its final values.
+        if set(updates.keys()) == {"needs_review"} \
+                and updates.get("needs_review") == 0:
+
+            values["needs_review"] = 0
+
+            values["review_reason"] = ""
+
+        else:
+
+            _problems = _review_problems(
+
+                values.get("product"),
+
+                values.get("seller"),
+
+                values.get("amount"),
+
+                values.get("purchase_date"),
+
+                values.get("extracted_text"),
+
+            )
+
+            values["needs_review"] = 1 if _problems else 0
+
+            values["review_reason"] = "; ".join(_problems)
 
         conn.execute(
 
@@ -4343,7 +4630,9 @@ def update_bill(
 
                 invoice_no=?, order_no=?, warranty_lifetime=?,
 
-                logo_url=?, company_domain=?, company_about=?
+                logo_url=?, company_domain=?, company_about=?,
+
+                needs_review=?, review_reason=?
 
             WHERE id=?
 
@@ -4377,6 +4666,10 @@ def update_bill(
 
                 patch_company["company_about"],
 
+                values.get("needs_review") or 0,
+
+                values.get("review_reason") or "",
+
                 bill_id,
 
             ),
@@ -4390,6 +4683,10 @@ def update_bill(
             (bill_id,),
 
         ).fetchone()
+
+    if learn_pair:
+
+        _save_learned_category(owner, learn_pair[0], learn_pair[1])
 
     backup_vault()
 
@@ -4496,6 +4793,347 @@ def delete_bill(
 # AUTOMATIC GMAIL MONITORING
 
 # --------------------------------------------------
+
+
+# --------------------------------------------------
+# AGENT V1 — ASK RASEED
+#
+# One entry point the frontend chat box calls. The agent picks a
+# tool from the message, runs it against the owner's own vault,
+# and answers in plain words, returning the bills it used so the
+# UI can show them. Tools in v1: search the vault, spending
+# summary, needs-review list, check-all (re-assess every bill and
+# apply learned category rules), expiring warranties, duplicate
+# finder, vault totals. Destructive tools (delete, merge) are
+# deliberately NOT here — those stay ask-first buttons in the UI.
+# --------------------------------------------------
+
+class AgentAsk(BaseModel):
+    message: str = ""
+
+
+def _agent_money(value) -> str:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount == int(amount):
+        return "Rs " + f"{int(amount):,}"
+    return "Rs " + f"{amount:,.2f}"
+
+
+def _agent_bills(owner):
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bills WHERE owner_email=?",
+            (owner,),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+_AGENT_MONTHS = {
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3,
+    "mar": 3, "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6,
+    "july": 7, "jul": 7, "august": 8, "aug": 8, "september": 9,
+    "sep": 9, "sept": 9, "october": 10, "oct": 10, "november": 11,
+    "nov": 11, "december": 12, "dec": 12,
+}
+
+
+def _agent_tool_search(bills, message):
+    stopwords = {
+        "find", "show", "search", "list", "bill", "bills", "my",
+        "the", "a", "an", "for", "me", "all", "of", "in", "on",
+        "please", "raseed", "get", "give",
+    }
+    tokens = [
+        token for token in re.findall(r"[a-z0-9]+", message.lower())
+        if len(token) >= 3 and token not in stopwords
+    ]
+    if not tokens:
+        return None
+    matches = []
+    for bill in bills:
+        haystack = " ".join([
+            str(bill.get("product") or ""),
+            str(bill.get("seller") or ""),
+            str(bill.get("category") or ""),
+            str(bill.get("invoice_no") or ""),
+            str(bill.get("order_no") or ""),
+            str(bill.get("original_filename") or ""),
+        ]).lower()
+        if any(token in haystack for token in tokens):
+            matches.append(bill)
+    total = sum(bill.get("amount") or 0 for bill in matches)
+    if matches:
+        answer = (
+            f"Found {len(matches)} bill(s) matching your search, "
+            f"totalling {_agent_money(total)}."
+        )
+    else:
+        answer = "I could not find any bill matching that."
+    return answer, matches[:10]
+
+
+def _agent_tool_spending(bills, message):
+    lowered = message.lower()
+    category = ""
+    for candidate in BILL_CATEGORIES:
+        if candidate.lower() in lowered:
+            category = candidate
+            break
+    if not category:
+        synonyms = {
+            "hostel": "Education", "fees": "Education",
+            "fee": "Education", "course": "Education",
+            "food": "Food", "eat": "Food", "restaurant": "Food",
+            "movie": "Entertainment", "groceries": "Food",
+        }
+        for word, mapped in synonyms.items():
+            if re.search(r"\b" + word + r"\b", lowered):
+                category = mapped
+                break
+    month_num = None
+    month_name = ""
+    for name, num in _AGENT_MONTHS.items():
+        if re.search(r"\b" + name + r"\b", lowered):
+            month_num, month_name = num, name.capitalize()
+            break
+    if "this month" in lowered:
+        today = datetime.utcnow().date()
+        month_num, month_name = today.month, "this month"
+    selected = bills
+    if category:
+        selected = [
+            bill for bill in selected
+            if (bill.get("category") or "") == category
+        ]
+    if month_num:
+        selected = [
+            bill for bill in selected
+            if str(bill.get("purchase_date") or "")[5:7]
+            == f"{month_num:02d}"
+        ]
+    total = sum(bill.get("amount") or 0 for bill in selected)
+    scope = " ".join(part for part in [
+        category, ("in " + month_name) if month_name else "",
+    ] if part).strip()
+    answer = (
+        f"You spent {_agent_money(total)}"
+        + (f" on {scope}" if scope else " in total")
+        + f" across {len(selected)} bill(s)."
+    )
+    ranked = sorted(
+        selected, key=lambda bill: bill.get("amount") or 0,
+        reverse=True)
+    return answer, ranked[:10]
+
+
+def _agent_tool_review_list(bills):
+    flagged = [bill for bill in bills if bill.get("needs_review")]
+    if not flagged:
+        return (
+            "Good news — no bill in your vault needs review. "
+            "Every bill has an amount, a date and a seller, and "
+            "the totals match.",
+            [],
+        )
+    lines = [
+        f"{len(flagged)} bill(s) need your review:"
+    ]
+    for bill in flagged[:5]:
+        lines.append(
+            "- " + (bill.get("product") or "Bill")
+            + ": " + (bill.get("review_reason") or "")
+        )
+    if len(flagged) > 5:
+        lines.append(f"...and {len(flagged) - 5} more.")
+    lines.append(
+        "Open a bill and fix the detail, or press Mark as correct "
+        "if it is actually right."
+    )
+    return "\n".join(lines), flagged[:10]
+
+
+def _agent_tool_check_all(owner):
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bills WHERE owner_email=?",
+            (owner,),
+        ).fetchall()
+        changed = 0
+        recategorised = 0
+        flagged = 0
+        for row in rows:
+            data = dict(row)
+            problems = _review_problems(
+                data.get("product"), data.get("seller"),
+                data.get("amount"), data.get("purchase_date"),
+                data.get("extracted_text"),
+            )
+            needs_review = 1 if problems else 0
+            reason = "; ".join(problems)
+            learned = _learned_category(owner, data.get("seller"))
+            new_category = data.get("category") or "Other"
+            if learned and learned != new_category:
+                new_category = learned
+                recategorised += 1
+            if (data.get("needs_review") != needs_review
+                    or (data.get("review_reason") or "") != reason
+                    or new_category != (data.get("category") or "")):
+                conn.execute(
+                    "UPDATE bills SET needs_review=?,"
+                    " review_reason=?, category=?"
+                    " WHERE id=?",
+                    (needs_review, reason, new_category, data["id"]),
+                )
+                changed += 1
+            if needs_review:
+                flagged += 1
+    if changed:
+        backup_vault()
+    answer = (
+        f"I checked all {len(rows)} bill(s) in your vault. "
+        f"{flagged} need(s) review"
+        + (f", and I fixed the category of {recategorised} "
+           "bill(s) using the rules you taught me."
+           if recategorised else ".")
+    )
+    bills = _agent_bills(owner)
+    return answer, [b for b in bills if b.get("needs_review")][:10]
+
+
+def _agent_tool_warranties(bills, message):
+    lowered = message.lower()
+    days_match = re.search(r"(\d+)\s*day", lowered)
+    days = int(days_match.group(1)) if days_match else 30
+    today = datetime.utcnow().date()
+    expiring = []
+    for bill in bills:
+        if bill.get("warranty_lifetime"):
+            continue
+        end_text = bill.get("warranty_end") or ""
+        try:
+            end = date.fromisoformat(end_text)
+        except (ValueError, TypeError):
+            continue
+        left = (end - today).days
+        if 0 <= left <= days:
+            expiring.append((left, bill))
+    expiring.sort(key=lambda pair: pair[0])
+    if not expiring:
+        return (
+            f"No warranties are expiring in the next {days} days.",
+            [],
+        )
+    lines = [f"{len(expiring)} warranty(ies) expiring soon:"]
+    for left, bill in expiring[:5]:
+        lines.append(
+            "- " + (bill.get("product") or "Bill")
+            + f": {left} day(s) left (ends "
+            + (bill.get("warranty_end") or "") + ")"
+        )
+    return "\n".join(lines), [bill for _, bill in expiring[:10]]
+
+
+def _agent_tool_duplicates(bills):
+    groups = {}
+    for bill in bills:
+        ref = bill.get("invoice_no") or bill.get("order_no") or ""
+        if ref:
+            groups.setdefault(("ref", ref), []).append(bill)
+            continue
+        key = (
+            "fields",
+            _seller_key(bill.get("seller")),
+            bill.get("amount"),
+            bill.get("purchase_date") or "",
+        )
+        if bill.get("amount"):
+            groups.setdefault(key, []).append(bill)
+    duplicates = [
+        group for group in groups.values() if len(group) > 1
+    ]
+    if not duplicates:
+        return "I found no duplicate bills in your vault.", []
+    flat = [bill for group in duplicates for bill in group]
+    answer = (
+        f"I found {len(duplicates)} possible duplicate set(s) "
+        f"covering {len(flat)} bills. I have not deleted anything "
+        "— open a bill and delete the extra copy yourself if it "
+        "really is a duplicate."
+    )
+    return answer, flat[:10]
+
+
+@app.post("/api/agent/ask")
+def agent_ask(payload: AgentAsk, request: Request):
+    owner = current_owner(request)
+    message = (payload.message or "").strip()
+    if guest_blocked(owner):
+        return {
+            "answer": "Please login first — the agent only works "
+                      "on the vault of the person signed in.",
+            "tool": "none",
+            "bills": [],
+        }
+    if not message:
+        return {
+            "answer": "Ask me something about your bills — for "
+                      "example: 'How much did I spend on food?', "
+                      "'Which bills need review?', 'Check all my "
+                      "bills' or 'Find my OnePlus bill'.",
+            "tool": "help",
+            "bills": [],
+        }
+    lowered = message.lower()
+    bills = _agent_bills(owner)
+    result = None
+    tool = ""
+    if "check all" in lowered or "verify" in lowered:
+        result = _agent_tool_check_all(owner)
+        tool = "check_all"
+    elif "duplicate" in lowered:
+        result = _agent_tool_duplicates(bills)
+        tool = "duplicates"
+    elif "review" in lowered or "problem" in lowered:
+        result = _agent_tool_review_list(bills)
+        tool = "review_list"
+    elif "warrant" in lowered and (
+            "expir" in lowered or "end" in lowered
+            or "left" in lowered or "soon" in lowered):
+        result = _agent_tool_warranties(bills, message)
+        tool = "warranties"
+    elif any(word in lowered for word in (
+            "spend", "spent", "expense", "how much", "total")):
+        result = _agent_tool_spending(bills, message)
+        tool = "spending"
+    elif "how many" in lowered:
+        total = sum(bill.get("amount") or 0 for bill in bills)
+        result = (
+            f"You have {len(bills)} bill(s) in your vault, "
+            f"totalling {_agent_money(total)}.",
+            [],
+        )
+        tool = "count"
+    else:
+        found = _agent_tool_search(bills, message)
+        if found is not None:
+            result = found
+            tool = "search"
+    if result is None:
+        result = (
+            "I could not match that to one of my tools yet. "
+            "Try: 'How much did I spend on food?', 'Which bills "
+            "need review?', 'Check all my bills', 'Find my "
+            "OnePlus bill', 'Any duplicates?' or 'Which "
+            "warranties expire in 30 days?'.",
+            [],
+        )
+        tool = "help"
+    answer, used_bills = result
+    return {"answer": answer, "tool": tool, "bills": used_bills}
+
 
 @app.post("/api/gmail/watch")
 
