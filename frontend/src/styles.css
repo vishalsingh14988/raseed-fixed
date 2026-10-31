@@ -845,3 +845,46 @@ button.upload-card:hover{background:#faf9ff}
 .app-shell.dark .agent-form input{background:#1b1440;border-color:#4c3bcf;color:#efeaff}
 .app-shell.dark .agent-answer{background:#1b1440;border-color:#4c3bcf;color:#e6e1ff}
 .app-shell.dark .agent-bill-chip{background:#1b1440;border-color:#4c3bcf;color:#c9c0ff}
+
+/* Dark polish v2: sidebar, nav, legend, auth form, misc surfaces */
+.app-shell.dark{color-scheme:dark}
+.app-shell.dark .sidebar{background:#171233;border-right-color:#2c2158}
+.app-shell.dark .brand-name{color:#f2efff}
+.app-shell.dark .brand-caption{color:#9a8fc7}
+.app-shell.dark .nav-item{color:#b7aee0}
+.app-shell.dark .nav-item:hover{background:#221a4a;color:#ece9ff}
+.app-shell.dark .nav-item.selected{background:linear-gradient(90deg,#6d4aff,#7f5cff);color:#fff}
+.app-shell.dark .sidebar-note{background:#1e1850;border-color:#342a6e;color:#b7aee0}
+.app-shell.dark .sidebar-bottom{color:#9a8fc7}
+.app-shell.dark .hero-card{background:linear-gradient(100deg,#241a56 0%,#322266 50%,#3d2a55 100%)}
+.app-shell.dark .hero-copy p{color:#cfc6f5}
+.app-shell.dark .sync-gmail-btn{box-shadow:0 10px 22px rgba(0,0,0,.45)}
+.app-shell.dark .rail-card{background:#1e1850;border-color:#342a6e}
+.app-shell.dark .lrow-name{color:#e6e1ff}
+.app-shell.dark .lrow-pct{color:#a79fd0}
+.app-shell.dark .lrow b{color:#ffffff}
+.app-shell.dark .donut-hole span{color:#a79fd0}
+.app-shell.dark .cat-chip{background:#342a6e;color:#d9d2ff}
+.app-shell.dark .bill-date,.app-shell.dark .bill-amt{color:#e6e1ff}
+.app-shell.dark .dropzone{background:#241b52;border-color:#6d4aff;color:#cfc6f5}
+.app-shell.dark .dropzone:hover{background:#2a2060;border-color:#a78bfa}
+.app-shell.dark .dropzone small{color:#9a8fc7}
+.app-shell.dark .upload-circle{background:#342a6e;color:#c4b5fd}
+.app-shell.dark .file-selected{color:#7ee2a0}
+.app-shell.dark .auth-form .field span{color:#cfc6f5}
+.app-shell.dark .auth-form .field input,.app-shell.dark .auth-form .field select{background:#171233;border-color:#342a6e;color:#efeaff}
+.app-shell.dark .auth-form .field input:focus,.app-shell.dark .auth-form .field select:focus{background:#1e1850;border-color:#a78bfa}
+.app-shell.dark .auth-heading{color:#f2efff}
+.app-shell.dark .auth-copy{color:#b7aee0}
+.app-shell.dark .auth-link{color:#a78bfa}
+.app-shell.dark .source-chip{background:#342a6e;color:#c4b5fd}
+.app-shell.dark .review-chip{background:#4a3510;color:#fcd34d}
+.app-shell.dark .no-file-note{color:#9a8fc7}
+.app-shell.dark .detail-status{color:#9a8fc7}
+.app-shell.dark .danger-button{background:#3a1522;border-color:#6e2434;color:#fda4af}
+.app-shell.dark .danger-button:hover{background:#4a1a2c}
+.app-shell.dark .filter-tabs button{color:#9a8fc7}
+.app-shell.dark .filter-tabs button.active{color:#d9d2ff}
+.app-shell.dark .setting-row{border-color:#2c2158}
+.app-shell.dark .gmail-logo-circle{box-shadow:0 1px 5px rgba(0,0,0,.5)}
+.app-shell.dark ::selection{background:#6d4aff;color:#fff}

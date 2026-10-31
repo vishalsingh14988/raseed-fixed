@@ -173,9 +173,10 @@ function App() {
   const [agentAnswer, setAgentAnswer] = useState("");
   const [agentBills, setAgentBills] = useState([]);
   const [agentBusy, setAgentBusy] = useState(false);
+  const [agentHistory, setAgentHistory] = useState([]);
   const [notice, setNotice] = useState("");
   const [activeNav, setActiveNav] = useState("Home");
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(() => { try { return localStorage.getItem("raseed_dark") === "1"; } catch { return false; } });
   const [remindersEnabled, setRemindersEnabled] = useState(true);
   const [gmailError, setGmailError] = useState("");
   const [gmailStatus, setGmailStatus] = useState(null); // null = not checked yet
@@ -452,11 +453,12 @@ function App() {
     if (!message || agentBusy) return;
     setAgentBusy(true); setAgentAnswer(""); setAgentBills([]);
     try {
-      const res = await apiFetch("/api/agent/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }) });
+      const res = await apiFetch("/api/agent/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, history: agentHistory }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "The agent could not answer.");
       setAgentAnswer(data.answer || "");
       setAgentBills(Array.isArray(data.bills) ? data.bills : []);
+      setAgentHistory(h => [...h.slice(-2), { question: message, answer: String(data.answer || "").slice(0, 300) }]);
       if (data.tool === "check_all") await loadBills();
     } catch (err) { setAgentAnswer(`Sorry \u2014 ${err.message}`); }
     finally { setAgentBusy(false); }
@@ -649,7 +651,7 @@ function App() {
           <section className="panel settings-panel">
             <div className="panel-heading"><div><h2>Preferences</h2><p>Simple controls for your Raseed workspace.</p></div></div>
             <div className="setting-row"><div className="setting-symbol"><Bell size={19} /></div><div className="setting-copy"><b>Warranty reminders</b><span>Show bills whose warranty is expiring soon.</span></div><button className={`toggle ${remindersEnabled ? "on" : ""}`} onClick={() => { setRemindersEnabled(v => !v); setNotice(`Warranty reminders ${remindersEnabled ? "paused" : "enabled"}.`); }} aria-label="Toggle reminders"><span /></button></div>
-            <div className="setting-row"><div className="setting-symbol"><Moon size={19} /></div><div className="setting-copy"><b>Appearance</b><span>Switch between light and dark themes.</span></div><button className="soft-button" onClick={() => setDark(v => !v)}>{dark ? <Sun size={16} /> : <Moon size={16} />}{dark ? "Light mode" : "Dark mode"}</button></div>
+            <div className="setting-row"><div className="setting-symbol"><Moon size={19} /></div><div className="setting-copy"><b>Appearance</b><span>Switch between light and dark themes.</span></div><button className="soft-button" onClick={() => { const next = !dark; setDark(next); try { localStorage.setItem("raseed_dark", next ? "1" : "0"); } catch { /* storage unavailable */ } }}>{dark ? <Sun size={16} /> : <Moon size={16} />}{dark ? "Light mode" : "Dark mode"}</button></div>
             <div className="setting-row"><div className="setting-symbol"><ShieldCheck size={19} /></div><div className="setting-copy"><b>File storage</b><span>Uploads are sent to your backend; Cloudinary credentials stay server-side.</span></div></div>
             {auth?.connected && (
               <div className="setting-row"><div className="setting-symbol"><Mail size={19} /></div><div className="setting-copy"><b>Gmail import</b><span>{gmailStatus?.connected ? `Connected (${gmailStatus.email}) — import invoice emails into your vault.` : "Connect Gmail to import invoice emails automatically."}</span></div>{gmailStatus?.connected ? <button className="soft-button" onClick={syncGmail} disabled={gmailImporting}>{gmailImporting ? "Scanning…" : "Import bills"}</button> : <a className="soft-button" href={`${API}/api/auth/gmail/connect`}>Connect Gmail</a>}</div>
