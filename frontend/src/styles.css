@@ -818,3 +818,30 @@ button.upload-card:hover{background:#faf9ff}
 .app-shell.dark .bill-sheet-head { background: #1D1845; }
 .app-shell.dark .bill-sheet pre { color: #CFC9EE; }
 .no-file-note { margin-top: 14px; font-size: 12px; color: #8B87A0; }
+
+/* Agent v1: needs-review + Ask Raseed */
+.review-chip{display:inline-block;margin-left:8px;font-size:10.5px;font-weight:800;letter-spacing:.02em;background:#fef3c7;color:#b45309;padding:3px 8px;border-radius:999px;vertical-align:middle;white-space:nowrap}
+.review-banner{display:flex;align-items:center;gap:14px;justify-content:space-between;background:#fffbeb;border:1px solid #fde68a;border-radius:14px;padding:13px 15px;margin-top:14px}
+.review-banner b{display:block;font-size:13.5px;color:#92400e}
+.review-banner span{display:block;font-size:12.5px;color:#78716c;margin-top:2px;line-height:1.45}
+.review-banner .secondary-button{flex:none}
+.agent-card{background:linear-gradient(120deg,#efeaff,#ffeef5);border:1px solid #ddd2fb;border-radius:16px;padding:15px 16px;margin-top:16px}
+.agent-head{display:flex;align-items:center;gap:8px;font-size:14px;color:#3d3654;flex-wrap:wrap}
+.agent-head svg{color:#6d4aff}
+.agent-head span{font-size:12.5px;color:#6f6890}
+.agent-form{display:flex;gap:9px;margin-top:11px}
+.agent-form input{flex:1;border:1.5px solid #ddd2fb;border-radius:11px;padding:10px 13px;font-size:13.5px;background:#fff;color:#292340;min-width:0}
+.agent-form input:focus{outline:none;border-color:#a78bfa}
+.agent-answer{margin-top:12px;background:#fff;border:1px solid #e7e0fd;border-radius:12px;padding:12px 14px;font-size:13.5px;line-height:1.55;color:#3d3654;white-space:pre-line}
+.agent-bills{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.agent-bill-chip{background:#fff;border:1.5px solid #ddd2fb;color:#5948d6;font-size:12.5px;font-weight:700;border-radius:999px;padding:7px 12px;cursor:pointer}
+.agent-bill-chip:hover{border-color:#a78bfa}
+.app-shell.dark .review-banner{background:#3a2f10;border-color:#8a6d1f}
+.app-shell.dark .review-banner b{color:#fcd34d}
+.app-shell.dark .review-banner span{color:#d6c58a}
+.app-shell.dark .agent-card{background:#251c5c;border-color:#4c3bcf}
+.app-shell.dark .agent-head{color:#e6e1ff}
+.app-shell.dark .agent-head span{color:#b9b0e8}
+.app-shell.dark .agent-form input{background:#1b1440;border-color:#4c3bcf;color:#efeaff}
+.app-shell.dark .agent-answer{background:#1b1440;border-color:#4c3bcf;color:#e6e1ff}
+.app-shell.dark .agent-bill-chip{background:#1b1440;border-color:#4c3bcf;color:#c9c0ff}

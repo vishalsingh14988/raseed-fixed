@@ -3,12 +3,16 @@ import { createRoot } from "react-dom/client";
 import {
   Bell, Check, ChevronDown, ClipboardList, FileText, Home, Search,
   ShieldCheck, Settings, Upload, Camera, X, Clock3, Trash2, ExternalLink,
-  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn, Mail, Receipt, Wallet
+  Plus, RefreshCw, Pencil, Moon, Sun, Heart, FileCheck2, LogOut, UserRound, LogIn, Mail, Receipt, Wallet, Sparkles
 } from "lucide-react";
 import "./styles.css";
 
 const API = (import.meta.env.VITE_API_URL || "https://billproof-starter.onrender.com").replace(/\/+$/, "");
-const FILTERS = ["All Documents", "Active Warranties", "Expiring Soon", "Expired", "No Warranty"];
+const NAV_FILTERS = {
+  "My Bills": ["All Documents", "Uploaded Bills", "Mail Bills", "Needs Review"],
+  "Warranty Tracker": ["Active Warranties", "No Warranty"],
+  "Reminders": ["Expiring Soon", "Expired"],
+};
 const NAV = [
   [Home, "Home"], [FileText, "My Bills"], [ShieldCheck, "Warranty Tracker"],
   [Bell, "Reminders"], [Settings, "Settings"]
@@ -165,6 +169,10 @@ function App() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedBill, setSelectedBill] = useState(null);
   const [spendingOpen, setSpendingOpen] = useState(false);
+  const [agentQ, setAgentQ] = useState("");
+  const [agentAnswer, setAgentAnswer] = useState("");
+  const [agentBills, setAgentBills] = useState([]);
+  const [agentBusy, setAgentBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [activeNav, setActiveNav] = useState("Home");
   const [dark, setDark] = useState(false);
@@ -438,12 +446,29 @@ function App() {
     setSelectedBill(data); setNotice("Bill details updated."); await loadBills();
   }
 
+  async function askAgent(e) {
+    if (e) e.preventDefault();
+    const message = agentQ.trim();
+    if (!message || agentBusy) return;
+    setAgentBusy(true); setAgentAnswer(""); setAgentBills([]);
+    try {
+      const res = await apiFetch("/api/agent/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "The agent could not answer.");
+      setAgentAnswer(data.answer || "");
+      setAgentBills(Array.isArray(data.bills) ? data.bills : []);
+      if (data.tool === "check_all") await loadBills();
+    } catch (err) { setAgentAnswer(`Sorry \u2014 ${err.message}`); }
+    finally { setAgentBusy(false); }
+  }
+
   const counts = useMemo(() => ({
     all: summaryBills.length,
     active: summaryBills.filter(b => b.warranty_status === "Active").length,
     soon: summaryBills.filter(b => b.warranty_status === "Expiring Soon").length,
     expired: summaryBills.filter(b => b.warranty_status === "Expired").length,
     noWarranty: summaryBills.filter(b => b.warranty_status === "No Warranty").length,
+    review: summaryBills.filter(b => b.needs_review).length,
     totalSpent: summaryBills.reduce((sum, b) => sum + (Number(b.amount) || 0), 0)
   }), [summaryBills]);
 
@@ -647,16 +672,27 @@ function App() {
                 <span>{gmailResult || "Scanning your Gmail…"}</span>
               </div>
             )}
+            {activeNav === "My Bills" && !guest && (
+              <div className="agent-card">
+                <div className="agent-head"><Sparkles size={17} /><b>Ask Raseed</b><span>Your bill agent — it searches, totals and checks your vault for you.</span></div>
+                <form className="agent-form" onSubmit={askAgent}>
+                  <input value={agentQ} onChange={e => setAgentQ(e.target.value)} placeholder="Try: How much did I spend on food? · Which bills need review? · Check all my bills" />
+                  <button className="primary-button" type="submit" disabled={agentBusy}>{agentBusy ? "Thinking\u2026" : "Ask"}</button>
+                </form>
+                {agentAnswer && <div className="agent-answer">{agentAnswer}</div>}
+                {agentBills.length > 0 && <div className="agent-bills">{agentBills.map(b => <button key={b.id} className="agent-bill-chip" onClick={() => setSelectedBill(b)}>{b.product || b.seller || "Bill"}{b.amount ? ` \u00b7 ${money(b.amount)}` : ""}{b.needs_review ? " \u00b7 Needs review" : ""}</button>)}</div>}
+              </div>
+            )}
             <div className="list-toolbar">
-              <div className="filter-tabs">{FILTERS.map(f => <button key={f} className={filter === f ? "active" : ""} onClick={() => setFilter(f)}>{f}</button>)}</div>
+              <div className="filter-tabs">{(NAV_FILTERS[activeNav] || []).map(f => <button key={f} className={filter === f ? "active" : ""} onClick={() => setFilter(f)}>{f === "Needs Review" && counts.review ? `${f} (${counts.review})` : f}</button>)}</div>
               <button className="sort-button" onClick={loadBills}><RefreshCw size={15} /> Refresh</button>
             </div>
             {loading ? <div className="empty-state"><RefreshCw className="spin" size={24} /><b>Loading your bills…</b></div> :
-              visibleBills.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>{guest ? "Login to see your bills" : query ? "No matching bills" : filter !== "All Documents" ? "No bills in this view" : "No bills here yet"}</b><span>{guest ? "Your vault is personal — your bills appear here only after you login." : query ? "Try a different search." : filter !== "All Documents" ? `You have ${counts.all} bill${counts.all === 1 ? "" : "s"} saved, but none match “${filter}” right now.` : "Upload your first receipt and it will appear here."}</span>{guest ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={17} /> Login with Google</a> : filter !== "All Documents" || query ? <button className="primary-button" onClick={() => { setFilter("All Documents"); setQuery(""); }}>Show all documents</button> : <button className="primary-button" onClick={() => setUploadOpen(true)}><Plus size={17} /> Add a bill</button>}</div> :
+              visibleBills.length === 0 ? <div className="empty-state"><div className="empty-icon"><FileText size={27} /></div><b>{guest ? "Login to see your bills" : query ? "No matching bills" : filter !== "All Documents" ? "No bills in this view" : "No bills here yet"}</b><span>{guest ? "Your vault is personal — your bills appear here only after you login." : query ? "Try a different search." : filter !== "All Documents" ? `You have ${counts.all} bill${counts.all === 1 ? "" : "s"} saved, but none match “${filter}” right now.` : "Upload your first receipt and it will appear here."}</span>{guest ? <a className="primary-button" href={`${API}/api/auth/google`}><LogIn size={17} /> Login with Google</a> : filter !== "All Documents" || query ? <button className="primary-button" onClick={() => { setQuery(""); navigate("My Bills"); }}>Show all documents</button> : <button className="primary-button" onClick={() => setUploadOpen(true)}><Plus size={17} /> Add a bill</button>}</div> :
               <div className="bill-list">
                 {visibleBills.map(bill => { const info = companyInfo(bill); return <button className="bill-row" key={bill.id} onClick={() => setSelectedBill(bill)}>
                   <BillLogo bill={bill} />
-                  <span className="bill-main"><b>{bill.product || bill.original_filename || "Untitled bill"}</b><small>{bill.seller || bill.category || "Purchase"}{info.about ? ` · ${info.about}` : ""} · {formatDate(bill.purchase_date)}</small></span>
+                  <span className="bill-main"><b>{bill.product || bill.original_filename || "Untitled bill"}{bill.needs_review ? <span className="review-chip">Needs review</span> : null}</b><small>{bill.seller || bill.category || "Purchase"}{info.about ? ` · ${info.about}` : ""} · {formatDate(bill.purchase_date)}</small></span>
                   <span className="bill-meta"><small>AMOUNT</small><b>{money(bill.amount)}</b></span>
                   <span className="bill-meta warranty-info"><small>WARRANTY ENDS</small><b>{bill.warranty_lifetime ? "Never (lifetime)" : formatDate(bill.warranty_end)}</b></span>
                   <Status status={bill.warranty_status} />
@@ -819,6 +855,7 @@ function BillModal({ bill, onClose, onDelete, onSave }) {
   return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="modal detail-modal">
     <div className="modal-head"><div><div className="eyebrow">YOUR SAVED RECEIPT</div><h2>{editing ? "Edit bill details" : bill.product || "Bill details"}</h2><p>{bill.seller || bill.original_filename || "Purchase record"}</p></div><button className="icon-button" onClick={onClose}><X size={20} /></button></div>
     <div className="detail-status"><Status status={bill.warranty_status} /><span>Added {formatDate((bill.created_at || "").slice(0,10))}</span></div>
+    {bill.needs_review ? <div className="review-banner"><div><b>Needs review</b><span>{bill.review_reason || "The agent could not fully verify this bill \u2014 please check it once."}</span></div><button className="secondary-button" disabled={saving} onClick={async () => { setSaving(true); setError(""); try { await onSave(bill, { needs_review: 0 }); } catch (e) { setError(e.message); } finally { setSaving(false); } }}>Mark as correct</button></div> : null}
     {!editing && (() => { const info = companyInfo(bill); return <div className="company-strip"><BillLogo bill={bill} /><div><b>{bill.seller || "Unknown company"}</b><span>{info.about || "Company not identified — showing the default bill logo"}</span></div><span className="source-chip">{info.source === "gmail" ? "From Gmail" : "Scanned bill"}</span></div>; })()}
     {editing ? <div className="form-grid">
       <label>Product<input value={form.product} onChange={e => change("product", e.target.value)} /></label>
