@@ -2195,6 +2195,93 @@ def _assess_review(product, seller, amount, purchase_date,
     return (1 if problems else 0), "; ".join(problems)
 
 
+def _norm_ref(value):
+    """Normalise an invoice/order number for comparison."""
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _duplicate_match(conn, owner, seller, product, amount,
+                     purchase_date, invoice_no, order_no,
+                     exclude_id=None):
+    """(kind, row) if another of the owner's bills looks like the
+    same purchase, else None. kind "ref" = a shared invoice/order
+    number (certain); kind "fuzzy" = same company + amount +
+    purchase date (probable). The guard that stops one purchase
+    arriving in several emails from becoming several bills."""
+    try:
+        rows = conn.execute(
+            "SELECT id, product, seller, amount, purchase_date,"
+            " invoice_no, order_no FROM bills WHERE owner_email=?",
+            (owner,),
+        ).fetchall()
+    except Exception:
+        return None
+    new_refs = {_norm_ref(invoice_no), _norm_ref(order_no)} - {""}
+    fuzzy_key = None
+    if amount is not None and purchase_date:
+        try:
+            fuzzy_key = (
+                _seller_key(seller or product or ""),
+                round(float(amount), 2),
+                str(purchase_date),
+            )
+        except (TypeError, ValueError):
+            fuzzy_key = None
+    fuzzy_hit = None
+    for row in rows:
+        if exclude_id is not None and row["id"] == exclude_id:
+            continue
+        if new_refs:
+            old_refs = {
+                _norm_ref(row["invoice_no"]),
+                _norm_ref(row["order_no"]),
+            } - {""}
+            if new_refs & old_refs:
+                return "ref", row
+        if fuzzy_key and fuzzy_hit is None:
+            if row["amount"] is not None and row["purchase_date"]:
+                try:
+                    key = (
+                        _seller_key(
+                            row["seller"] or row["product"] or ""),
+                        round(float(row["amount"]), 2),
+                        str(row["purchase_date"]),
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if key == fuzzy_key:
+                    fuzzy_hit = row
+    if fuzzy_hit is not None:
+        return "fuzzy", fuzzy_hit
+    return None
+
+
+def _duplicate_reason(match):
+    """Plain-language Possible-duplicate reason for a match."""
+    kind, row = match
+    other = str(row["product"] or "another bill")[:60]
+    if kind == "ref":
+        return (
+            "Possible duplicate: the same invoice/order number "
+            f"is already on '{other}'"
+        )
+    return (
+        "Possible duplicate: same company, amount and date as "
+        f"'{other}'"
+    )
+
+
+def _duplicate_problem(conn, owner, seller, product, amount,
+                       purchase_date, invoice_no, order_no,
+                       exclude_id=None):
+    """Possible-duplicate reason for a bill about to be saved,
+    or "" when nothing in the vault looks like the same purchase."""
+    match = _duplicate_match(
+        conn, owner, seller, product, amount, purchase_date,
+        invoice_no, order_no, exclude_id=exclude_id)
+    return _duplicate_reason(match) if match else ""
+
+
 def row_to_dict(row):
 
     result = dict(row)
@@ -3339,6 +3426,23 @@ def _perform_gmail_scan(email, report=None):
                     body_category = categorize_bill(
                         body_seller, product, body_text, fields,
                         owner=email)
+                    _bdm = None
+                    with db() as _dc:
+                        _bdm = _duplicate_match(
+                            _dc, email, body_seller, product, amount,
+                            purchase_date_value,
+                            fields.get("invoice_no", ""),
+                            fields.get("order_no", ""))
+                    if _bdm and _bdm[0] == "ref":
+                        skipped += 1
+                        progress(checked, imported, skipped)
+                        continue
+                    _ba = _assess_review(
+                        product, body_seller, amount,
+                        purchase_date_value, body_text)
+                    if _bdm:
+                        _ba = (1, "; ".join([p for p in [
+                            _ba[1], _duplicate_reason(_bdm)] if p]))
                     with db() as conn:
                         conn.execute(
                             """
@@ -3376,8 +3480,8 @@ def _perform_gmail_scan(email, report=None):
                                 body_company["company_domain"],
                                 body_company["company_about"],
                                 email_date,
-                                _assess_review(product, body_seller, amount, purchase_date_value, body_text)[0],
-                                _assess_review(product, body_seller, amount, purchase_date_value, body_text)[1],
+                                _ba[0],
+                                _ba[1],
                             ),
                         )
                     known_keys.add(source_key)
@@ -3561,6 +3665,19 @@ def _perform_gmail_scan(email, report=None):
                             fields.get("product") or subject[:100],
                             extracted, fields, owner=email)
 
+                        _gdm = None
+                        with db() as _dc:
+                            _gdm = _duplicate_match(
+                                _dc, email, fields.get("seller", ""),
+                                fields.get("product") or subject[:100],
+                                gmail_amount, gmail_purchase_date,
+                                fields.get("invoice_no", ""),
+                                fields.get("order_no", ""))
+                        if _gdm and _gdm[0] == "ref":
+                            skipped += 1
+                            progress(checked, imported, skipped)
+                            continue
+
                         configure_cloudinary()
                         uploaded = cloudinary.uploader.upload(
                             temp_path,
@@ -3571,6 +3688,9 @@ def _perform_gmail_scan(email, report=None):
                             overwrite=False,
                         )
 
+                        _ga = _assess_review(fields.get("product") or subject[:100], fields.get("seller", ""), gmail_amount, gmail_purchase_date, extracted)
+                        if _gdm:
+                            _ga = (1, "; ".join([p for p in [_ga[1], _duplicate_reason(_gdm)] if p]))
                         with db() as conn:
                             conn.execute(
                                 """
@@ -3611,8 +3731,8 @@ def _perform_gmail_scan(email, report=None):
                                     gmail_company["company_domain"],
                                     gmail_company["company_about"],
                                     email_date,
-                                    _assess_review(fields.get("product") or subject[:100], fields.get("seller", ""), gmail_amount, gmail_purchase_date, extracted)[0],
-                                    _assess_review(fields.get("product") or subject[:100], fields.get("seller", ""), gmail_amount, gmail_purchase_date, extracted)[1],
+                                    _ga[0],
+                                    _ga[1],
                                 ),
                             )
                         known_keys.add(source_key)
@@ -4331,6 +4451,20 @@ async def upload_bill(
 
         with db() as conn:
 
+            _ur = _assess_review(product, seller, amount, purchase_date, text)
+
+            _dup = _duplicate_problem(
+
+                conn, current_owner(request), seller, product,
+
+                amount, purchase_date,
+
+                fields.get("invoice_no", ""), fields.get("order_no", ""))
+
+            if _dup:
+
+                _ur = (1, "; ".join([p for p in [_ur[1], _dup] if p]))
+
             cursor = conn.execute(
 
                 """
@@ -4397,9 +4531,9 @@ async def upload_bill(
 
                     datetime.utcnow().date().isoformat(),
 
-                    _assess_review(product, seller, amount, purchase_date, text)[0],
+                    _ur[0],
 
-                    _assess_review(product, seller, amount, purchase_date, text)[1],
+                    _ur[1],
 
                 ),
 
@@ -4614,6 +4748,26 @@ def update_bill(
 
             )
 
+            _dup_reason = _duplicate_problem(
+
+                conn, owner, values.get("seller"),
+
+                values.get("product"), values.get("amount"),
+
+                values.get("purchase_date"),
+
+                values.get("invoice_no", ""),
+
+                values.get("order_no", ""),
+
+                exclude_id=bill_id,
+
+            )
+
+            if _dup_reason and _dup_reason not in _problems:
+
+                _problems = _problems + [_dup_reason]
+
             values["needs_review"] = 1 if _problems else 0
 
             values["review_reason"] = "; ".join(_problems)
@@ -4810,6 +4964,7 @@ def delete_bill(
 
 class AgentAsk(BaseModel):
     message: str = ""
+    history: list = []
 
 
 def _agent_money(value) -> str:
@@ -4840,14 +4995,15 @@ _AGENT_MONTHS = {
 }
 
 
-def _agent_tool_search(bills, message):
+def _agent_tool_search(bills, message, query=None):
     stopwords = {
         "find", "show", "search", "list", "bill", "bills", "my",
         "the", "a", "an", "for", "me", "all", "of", "in", "on",
         "please", "raseed", "get", "give",
     }
     tokens = [
-        token for token in re.findall(r"[a-z0-9]+", message.lower())
+        token for token in re.findall(
+            r"[a-z0-9]+", (query or message).lower())
         if len(token) >= 3 and token not in stopwords
     ]
     if not tokens:
@@ -4872,16 +5028,18 @@ def _agent_tool_search(bills, message):
         )
     else:
         answer = "I could not find any bill matching that."
-    return answer, matches[:10]
+    return answer, matches[:200]
 
 
-def _agent_tool_spending(bills, message):
+def _agent_tool_spending(bills, message, category=None,
+                         month_num=None):
     lowered = message.lower()
-    category = ""
-    for candidate in BILL_CATEGORIES:
-        if candidate.lower() in lowered:
-            category = candidate
-            break
+    if category not in BILL_CATEGORIES:
+        category = ""
+        for candidate in BILL_CATEGORIES:
+            if candidate.lower() in lowered:
+                category = candidate
+                break
     if not category:
         synonyms = {
             "hostel": "Education", "fees": "Education",
@@ -4893,15 +5051,19 @@ def _agent_tool_spending(bills, message):
             if re.search(r"\b" + word + r"\b", lowered):
                 category = mapped
                 break
-    month_num = None
     month_name = ""
-    for name, num in _AGENT_MONTHS.items():
-        if re.search(r"\b" + name + r"\b", lowered):
-            month_num, month_name = num, name.capitalize()
-            break
-    if "this month" in lowered:
-        today = datetime.utcnow().date()
-        month_num, month_name = today.month, "this month"
+    if month_num:
+        names = [k for k, v in _AGENT_MONTHS.items()
+                 if v == month_num and len(k) > 3]
+        month_name = names[0].capitalize() if names else ""
+    else:
+        for name, num in _AGENT_MONTHS.items():
+            if re.search(r"\b" + name + r"\b", lowered):
+                month_num, month_name = num, name.capitalize()
+                break
+        if "this month" in lowered:
+            today = datetime.utcnow().date()
+            month_num, month_name = today.month, "this month"
     selected = bills
     if category:
         selected = [
@@ -4926,7 +5088,7 @@ def _agent_tool_spending(bills, message):
     ranked = sorted(
         selected, key=lambda bill: bill.get("amount") or 0,
         reverse=True)
-    return answer, ranked[:10]
+    return answer, ranked[:200]
 
 
 def _agent_tool_review_list(bills):
@@ -4952,7 +5114,7 @@ def _agent_tool_review_list(bills):
         "Open a bill and fix the detail, or press Mark as correct "
         "if it is actually right."
     )
-    return "\n".join(lines), flagged[:10]
+    return "\n".join(lines), flagged[:200]
 
 
 def _agent_tool_check_all(owner):
@@ -4964,6 +5126,28 @@ def _agent_tool_check_all(owner):
         changed = 0
         recategorised = 0
         flagged = 0
+        _groups = {}
+        for _r in rows:
+            _d = dict(_r)
+            for _ref in {_norm_ref(_d.get("invoice_no")),
+                         _norm_ref(_d.get("order_no"))} - {""}:
+                _groups.setdefault(
+                    "ref:" + _ref, []).append(_d["id"])
+            if _d.get("amount") is not None and _d.get("purchase_date"):
+                try:
+                    _fk = (
+                        "fuzzy:"
+                        + _seller_key(
+                            _d.get("seller")
+                            or _d.get("product") or "")
+                        + "|" + str(round(float(_d["amount"]), 2))
+                        + "|" + str(_d["purchase_date"]))
+                    _groups.setdefault(_fk, []).append(_d["id"])
+                except (TypeError, ValueError):
+                    pass
+        _dup_ids = {
+            _i for _ids in _groups.values() if len(_ids) > 1
+            for _i in _ids}
         for row in rows:
             data = dict(row)
             problems = _review_problems(
@@ -4973,6 +5157,12 @@ def _agent_tool_check_all(owner):
             )
             needs_review = 1 if problems else 0
             reason = "; ".join(problems)
+            if data["id"] in _dup_ids:
+                problems = problems + [
+                    "Possible duplicate: another bill in your "
+                    "vault looks like the same purchase"]
+                needs_review = 1
+                reason = "; ".join(problems)
             learned = _learned_category(owner, data.get("seller"))
             new_category = data.get("category") or "Other"
             if learned and learned != new_category:
@@ -5000,13 +5190,14 @@ def _agent_tool_check_all(owner):
            if recategorised else ".")
     )
     bills = _agent_bills(owner)
-    return answer, [b for b in bills if b.get("needs_review")][:10]
+    return answer, [b for b in bills if b.get("needs_review")][:200]
 
 
-def _agent_tool_warranties(bills, message):
+def _agent_tool_warranties(bills, message, days=None):
     lowered = message.lower()
-    days_match = re.search(r"(\d+)\s*day", lowered)
-    days = int(days_match.group(1)) if days_match else 30
+    if not days:
+        days_match = re.search(r"(\d+)\s*day", lowered)
+        days = int(days_match.group(1)) if days_match else 30
     today = datetime.utcnow().date()
     expiring = []
     for bill in bills:
@@ -5033,7 +5224,7 @@ def _agent_tool_warranties(bills, message):
             + f": {left} day(s) left (ends "
             + (bill.get("warranty_end") or "") + ")"
         )
-    return "\n".join(lines), [bill for _, bill in expiring[:10]]
+    return "\n".join(lines), [bill for _, bill in expiring[:200]]
 
 
 def _agent_tool_duplicates(bills):
@@ -5063,7 +5254,458 @@ def _agent_tool_duplicates(bills):
         "— open a bill and delete the extra copy yourself if it "
         "really is a duplicate."
     )
-    return answer, flat[:10]
+    return answer, flat[:200]
+
+
+
+
+def _gemini_text_json(prompt):
+    """One text-only Gemini call expecting a JSON object back.
+
+    Same best-effort pattern as ai_classify_category: any failure
+    (no key, timeout, odd reply) returns {} and the caller falls
+    back to deterministic behaviour.
+    """
+    key = _gemini_api_key()
+    if not key:
+        return {}
+    base = os.getenv(
+        "GEMINI_API_BASE",
+        "https://generativelanguage.googleapis.com/v1beta",
+    ).rstrip("/")
+    models = []
+    for candidate in [os.getenv("GEMINI_MODEL", "")] + list(
+            AI_READER_MODELS):
+        if candidate and candidate not in models:
+            models.append(candidate)
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0,
+            "responseMimeType": "application/json",
+        },
+    }
+    for model in models[:2]:
+        try:
+            with httpx.Client(timeout=15.0, trust_env=False) as client:
+                response = client.post(
+                    f"{base}/models/{model}:generateContent",
+                    headers={
+                        "x-goog-api-key": key,
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+            if response.status_code != 200:
+                continue
+            body = response.json()
+            parts = (
+                body.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+            text = "".join(
+                part.get("text", "") for part in parts).strip()
+            parsed = _parse_ai_json(text)
+            if isinstance(parsed, dict) and parsed:
+                return parsed
+        except Exception:
+            continue
+    return {}
+
+
+_AGENT_TOOL_NAMES = {
+    "search", "spending", "breakdown", "biggest", "recent",
+    "seller_total", "explain", "review_list", "check_all",
+    "warranties", "duplicates", "count", "learned_list",
+    "learned_forget",
+}
+
+
+def _agent_plan(message, history, bills):
+    """Ask Gemini which tool fits this message, with parameters.
+
+    Returns a validated plan dict, or None when Gemini is not
+    available or its answer cannot be trusted — the deterministic
+    router then decides. Gemini never sees or invents amounts:
+    tools compute every number from the vault itself.
+    """
+    sellers = []
+    for bill in bills:
+        seller = str(bill.get("seller") or "").strip()
+        if seller and seller not in sellers:
+            sellers.append(seller)
+    flagged = sum(1 for bill in bills if bill.get("needs_review"))
+    history_lines = []
+    for item in (history or [])[-3:]:
+        if isinstance(item, dict):
+            q = str(item.get("question") or "")[:200]
+            a = str(item.get("answer") or "")[:300]
+            if q:
+                history_lines.append(f"User asked: {q}\nAgent said: {a}")
+    prompt = (
+        "You route questions for Raseed, a personal bill vault, to "
+        "one tool. Reply with ONLY a JSON object like "
+        "{\"tool\": \"spending\", \"category\": \"Food\", "
+        "\"month\": 10, \"seller\": null, \"query\": null, "
+        "\"days\": null}.\n"
+        "Tools: search (find bills matching words; put the words "
+        "in query), spending (total spent; optional category and "
+        "month number), breakdown (totals per category), biggest "
+        "(largest bills), recent (latest bills), seller_total "
+        "(total at one company; put its name in seller), explain "
+        "(details of one bill; put identifying words in query), "
+        "review_list (bills flagged needs review), check_all "
+        "(re-check every bill), warranties (expiring warranties; "
+        "days = window, default 30), duplicates, count (how many "
+        "bills / grand total), learned_list (rules the agent "
+        "learned from the user's corrections), learned_forget "
+        "(forget one learned rule; seller = the company).\n"
+        "Categories: " + ", ".join(BILL_CATEGORIES) + ".\n"
+        "Companies in this vault: "
+        + (", ".join(sellers[:25]) if sellers else "none") + ".\n"
+        f"The vault has {len(bills)} bills, {flagged} flagged "
+        "needs review. Today is "
+        + datetime.utcnow().date().isoformat() + ".\n"
+        + ("Recent conversation:\n" + "\n".join(history_lines) + "\n"
+           if history_lines else "")
+        + "User's new message: " + str(message)[:500]
+    )
+    plan = _gemini_text_json(prompt)
+    if not isinstance(plan, dict):
+        return None
+    tool = plan.get("tool")
+    if tool not in _AGENT_TOOL_NAMES:
+        return None
+    clean = {"tool": tool}
+    category = plan.get("category")
+    if category in BILL_CATEGORIES:
+        clean["category"] = category
+    month = plan.get("month")
+    if isinstance(month, int) and 1 <= month <= 12:
+        clean["month"] = month
+    days = plan.get("days")
+    if isinstance(days, int) and 1 <= days <= 3650:
+        clean["days"] = days
+    seller = plan.get("seller")
+    if isinstance(seller, str) and seller.strip():
+        for known in sellers:
+            if seller.strip().lower() in known.lower() \
+                    or known.lower() in seller.strip().lower():
+                clean["seller"] = known
+                break
+    query = plan.get("query")
+    if isinstance(query, str) and query.strip():
+        clean["query"] = query.strip()[:80]
+    return clean
+
+
+def _agent_tool_breakdown(bills):
+    by_category = {}
+    for bill in bills:
+        category = bill.get("category") or "Other"
+        entry = by_category.setdefault(
+            category, {"total": 0.0, "count": 0})
+        entry["total"] += bill.get("amount") or 0
+        entry["count"] += 1
+    if not by_category:
+        return "Your vault is empty, so there is no breakdown yet.", []
+    ordered = sorted(
+        by_category.items(),
+        key=lambda pair: pair[1]["total"], reverse=True)
+    grand = sum(entry["total"] for _, entry in ordered)
+    lines = [f"Your spending by category (total {_agent_money(grand)}):"]
+    for category, entry in ordered:
+        pct = (entry["total"] / grand * 100) if grand else 0
+        lines.append(
+            f"- {category}: {_agent_money(entry['total'])} "
+            f"({entry['count']} bill(s), {pct:.0f}%)"
+        )
+    return "\n".join(lines), []
+
+
+def _agent_tool_biggest(bills, count=5):
+    ranked = sorted(
+        (bill for bill in bills if bill.get("amount")),
+        key=lambda bill: bill.get("amount") or 0, reverse=True)
+    if not ranked:
+        return "No bills with amounts yet.", []
+    lines = [f"Your {min(count, len(ranked))} biggest bills:"]
+    for bill in ranked[:count]:
+        lines.append(
+            "- " + (bill.get("product") or "Bill")
+            + f": {_agent_money(bill.get('amount'))}"
+            + (f" ({bill.get('seller')})" if bill.get("seller") else "")
+            + (f", {bill.get('purchase_date')}"
+               if bill.get("purchase_date") else "")
+        )
+    return "\n".join(lines), ranked[:count]
+
+
+def _agent_tool_recent(bills, count=5):
+    ordered = sorted(
+        bills,
+        key=lambda bill: (
+            str(bill.get("received_date") or ""),
+            str(bill.get("created_at") or ""),
+        ),
+        reverse=True,
+    )
+    if not ordered:
+        return "Your vault is empty.", []
+    lines = ["Your most recently added bills:"]
+    for bill in ordered[:count]:
+        lines.append(
+            "- " + (bill.get("product") or "Bill")
+            + (f": {_agent_money(bill.get('amount'))}"
+               if bill.get("amount") else "")
+            + (f" (received {bill.get('received_date')})"
+               if bill.get("received_date") else "")
+        )
+    return "\n".join(lines), ordered[:count]
+
+
+def _agent_tool_seller_total(bills, seller):
+    matched = [
+        bill for bill in bills
+        if seller.lower() in str(bill.get("seller") or "").lower()
+    ]
+    if not matched:
+        return f"I found no bills from {seller}.", []
+    total = sum(bill.get("amount") or 0 for bill in matched)
+    answer = (
+        f"You spent {_agent_money(total)} at {seller} "
+        f"across {len(matched)} bill(s)."
+    )
+    return answer, matched[:200]
+
+
+def _agent_tool_explain(bills, message, query=None):
+    found = _agent_tool_search(bills, message, query)
+    if not found or not found[1]:
+        return "I could not find that bill in your vault.", []
+    bill = found[1][0]
+    lines = [
+        (bill.get("product") or "Bill")
+        + (f" from {bill.get('seller')}" if bill.get("seller") else "")
+        + f" — {_agent_money(bill.get('amount'))}"
+        if bill.get("amount") else (bill.get("product") or "Bill"),
+        f"Category: {bill.get('category') or 'Other'}",
+        f"Purchased: {bill.get('purchase_date') or 'not recorded'}"
+        f" · Received in Raseed: {bill.get('received_date') or '—'}",
+    ]
+    if bill.get("invoice_no"):
+        lines.append(f"Invoice number: {bill['invoice_no']}")
+    if bill.get("order_no"):
+        lines.append(f"Order number: {bill['order_no']}")
+    if bill.get("warranty_lifetime"):
+        lines.append("Warranty: Lifetime")
+    elif bill.get("warranty_end"):
+        lines.append(
+            f"Warranty: {bill.get('warranty_status') or ''}, "
+            f"ends {bill['warranty_end']}"
+        )
+    else:
+        lines.append("Warranty: none recorded")
+    lines.append(
+        "Source: " + ("came from Gmail"
+                       if bill.get("source") == "gmail"
+                       else "uploaded/scanned by you")
+    )
+    if bill.get("needs_review"):
+        lines.append(
+            "Needs review: " + (bill.get("review_reason") or ""))
+    return "\n".join(lines), [bill]
+
+
+def _agent_learned_rules(owner):
+    try:
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT seller_key, category FROM learned_rules"
+                " WHERE owner_email=? ORDER BY seller_key",
+                (owner,),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+    except Exception:
+        return []
+
+
+def _agent_tool_learned_list(owner):
+    rules = _agent_learned_rules(owner)
+    if not rules:
+        return (
+            "I have not learned any rules from you yet. When you "
+            "change a bill's category in Edit details, I remember "
+            "it for that company.",
+            [],
+        )
+    lines = ["Rules you taught me:"]
+    for seller_key, category in rules:
+        lines.append(
+            f"- Bills from {seller_key.title()} go to {category}")
+    lines.append(
+        "To remove one, say: forget the <company> rule.")
+    return "\n".join(lines), []
+
+
+def _agent_tool_learned_forget(owner, message, seller=None):
+    rules = _agent_learned_rules(owner)
+    if not rules:
+        return "I have no learned rules to forget.", []
+    target = None
+    if seller:
+        wanted = _seller_key(seller)
+        for seller_key, _category in rules:
+            if seller_key == wanted:
+                target = seller_key
+                break
+    if not target:
+        lowered = message.lower()
+        for seller_key, _category in rules:
+            if seller_key in lowered:
+                target = seller_key
+                break
+    if not target:
+        names = ", ".join(key for key, _ in rules)
+        return (
+            "Which rule should I forget? I know rules for: "
+            + names + ".",
+            [],
+        )
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM learned_rules"
+            " WHERE owner_email=? AND seller_key=?",
+            (owner, target),
+        )
+    return (
+        f"Done — I forgot the rule for {target.title()}. "
+        "New bills from them will be categorised normally again.",
+        [],
+    )
+
+
+def _agent_dispatch(owner, bills, message, tool, plan):
+    """Run one planned/named tool. Returns (answer, bills) or None."""
+    plan = plan or {}
+    if tool == "search":
+        return _agent_tool_search(
+            bills, message, plan.get("query")) or None
+    if tool == "spending":
+        return _agent_tool_spending(
+            bills, message, plan.get("category"), plan.get("month"))
+    if tool == "breakdown":
+        return _agent_tool_breakdown(bills)
+    if tool == "biggest":
+        return _agent_tool_biggest(bills)
+    if tool == "recent":
+        return _agent_tool_recent(bills)
+    if tool == "seller_total":
+        seller = plan.get("seller")
+        if not seller:
+            return None
+        return _agent_tool_seller_total(bills, seller)
+    if tool == "explain":
+        return _agent_tool_explain(
+            bills, message, plan.get("query"))
+    if tool == "review_list":
+        return _agent_tool_review_list(bills)
+    if tool == "check_all":
+        return _agent_tool_check_all(owner)
+    if tool == "warranties":
+        return _agent_tool_warranties(
+            bills, message, plan.get("days"))
+    if tool == "duplicates":
+        return _agent_tool_duplicates(bills)
+    if tool == "count":
+        total = sum(bill.get("amount") or 0 for bill in bills)
+        return (
+            f"You have {len(bills)} bill(s) in your vault, "
+            f"totalling {_agent_money(total)}.",
+            [],
+        )
+    if tool == "learned_list":
+        return _agent_tool_learned_list(owner)
+    if tool == "learned_forget":
+        return _agent_tool_learned_forget(
+            owner, message, plan.get("seller"))
+    return None
+
+
+def _agent_route_deterministic(owner, bills, message):
+    """Keyword router — the no-Gemini fallback. Returns
+    (answer, bills, tool) or None."""
+    lowered = message.lower()
+    if "check all" in lowered or "verify" in lowered:
+        answer, used = _agent_tool_check_all(owner)
+        return answer, used, "check_all"
+    if "duplicate" in lowered:
+        answer, used = _agent_tool_duplicates(bills)
+        return answer, used, "duplicates"
+    if "forget" in lowered and "rule" in lowered:
+        answer, used = _agent_tool_learned_forget(owner, message)
+        return answer, used, "learned_forget"
+    if ("what have you learned" in lowered
+            or "what do you remember" in lowered
+            or "my rules" in lowered
+            or "learned" in lowered):
+        answer, used = _agent_tool_learned_list(owner)
+        return answer, used, "learned_list"
+    if "review" in lowered or "problem" in lowered:
+        answer, used = _agent_tool_review_list(bills)
+        return answer, used, "review_list"
+    if "warrant" in lowered and (
+            "expir" in lowered or "end" in lowered
+            or "left" in lowered or "soon" in lowered):
+        answer, used = _agent_tool_warranties(bills, message)
+        return answer, used, "warranties"
+    if ("breakdown" in lowered or "by category" in lowered
+            or "each category" in lowered
+            or "category wise" in lowered):
+        answer, used = _agent_tool_breakdown(bills)
+        return answer, used, "breakdown"
+    if ("biggest" in lowered or "largest" in lowered
+            or "most expensive" in lowered):
+        answer, used = _agent_tool_biggest(bills)
+        return answer, used, "biggest"
+    if ("recent" in lowered or "latest" in lowered
+            or "last bills" in lowered):
+        answer, used = _agent_tool_recent(bills)
+        return answer, used, "recent"
+    if (lowered.startswith("tell me about")
+            or "details of" in lowered
+            or lowered.startswith("explain")):
+        answer, used = _agent_tool_explain(bills, message)
+        return answer, used, "explain"
+    sellers = []
+    for bill in bills:
+        seller = str(bill.get("seller") or "").strip()
+        if seller and seller not in sellers:
+            sellers.append(seller)
+    for seller in sellers:
+        if len(seller) >= 3 and seller.lower() in lowered and any(
+                word in lowered
+                for word in ("how much", "spent", "spend", "total")):
+            answer, used = _agent_tool_seller_total(bills, seller)
+            return answer, used, "seller_total"
+    if any(word in lowered for word in (
+            "spend", "spent", "expense", "how much", "total")):
+        answer, used = _agent_tool_spending(bills, message)
+        return answer, used, "spending"
+    if "how many" in lowered:
+        total = sum(bill.get("amount") or 0 for bill in bills)
+        return (
+            f"You have {len(bills)} bill(s) in your vault, "
+            f"totalling {_agent_money(total)}.",
+            [],
+            "count",
+        )
+    found = _agent_tool_search(bills, message)
+    if found is not None:
+        answer, used = found
+        return answer, used, "search"
+    return None
 
 
 @app.post("/api/agent/ask")
@@ -5077,61 +5719,38 @@ def agent_ask(payload: AgentAsk, request: Request):
             "tool": "none",
             "bills": [],
         }
+    help_text = (
+        "Ask me about your bills — for example: 'How much did I "
+        "spend on food in October?', 'Show my spending breakdown', "
+        "'What are my biggest bills?', 'Tell me about my OnePlus "
+        "bill', 'How much have I spent at Croma?', 'Which bills "
+        "need review?', 'Check all my bills', 'What have you "
+        "learned from me?' or 'Which warranties expire in 30 "
+        "days?'."
+    )
     if not message:
-        return {
-            "answer": "Ask me something about your bills — for "
-                      "example: 'How much did I spend on food?', "
-                      "'Which bills need review?', 'Check all my "
-                      "bills' or 'Find my OnePlus bill'.",
-            "tool": "help",
-            "bills": [],
-        }
-    lowered = message.lower()
+        return {"answer": help_text, "tool": "help", "bills": []}
     bills = _agent_bills(owner)
-    result = None
-    tool = ""
-    if "check all" in lowered or "verify" in lowered:
-        result = _agent_tool_check_all(owner)
-        tool = "check_all"
-    elif "duplicate" in lowered:
-        result = _agent_tool_duplicates(bills)
-        tool = "duplicates"
-    elif "review" in lowered or "problem" in lowered:
-        result = _agent_tool_review_list(bills)
-        tool = "review_list"
-    elif "warrant" in lowered and (
-            "expir" in lowered or "end" in lowered
-            or "left" in lowered or "soon" in lowered):
-        result = _agent_tool_warranties(bills, message)
-        tool = "warranties"
-    elif any(word in lowered for word in (
-            "spend", "spent", "expense", "how much", "total")):
-        result = _agent_tool_spending(bills, message)
-        tool = "spending"
-    elif "how many" in lowered:
-        total = sum(bill.get("amount") or 0 for bill in bills)
-        result = (
-            f"You have {len(bills)} bill(s) in your vault, "
-            f"totalling {_agent_money(total)}.",
-            [],
-        )
-        tool = "count"
-    else:
-        found = _agent_tool_search(bills, message)
-        if found is not None:
-            result = found
-            tool = "search"
-    if result is None:
-        result = (
+    history = payload.history if isinstance(
+        payload.history, list) else []
+    plan = _agent_plan(message, history, bills)
+    routed = None
+    if plan:
+        dispatched = _agent_dispatch(
+            owner, bills, message, plan["tool"], plan)
+        if dispatched is not None:
+            answer, used = dispatched
+            routed = (answer, used, plan["tool"])
+    if routed is None:
+        routed = _agent_route_deterministic(owner, bills, message)
+    if routed is None:
+        routed = (
             "I could not match that to one of my tools yet. "
-            "Try: 'How much did I spend on food?', 'Which bills "
-            "need review?', 'Check all my bills', 'Find my "
-            "OnePlus bill', 'Any duplicates?' or 'Which "
-            "warranties expire in 30 days?'.",
+            + help_text,
             [],
+            "help",
         )
-        tool = "help"
-    answer, used_bills = result
+    answer, used_bills, tool = routed
     return {"answer": answer, "tool": tool, "bills": used_bills}
 
 
